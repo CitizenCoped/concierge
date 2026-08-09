@@ -2,4 +2,4 @@
 
 Public privacy policy for STE SMS/text communications.
 
-**Live page:** https://angelai.github.io/concierge/
+**Live page:** https://citizencoped.github.io/concierge/
