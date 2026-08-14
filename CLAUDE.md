@@ -38,6 +38,12 @@ Front desk phone ──▶ AgentPhone number ──▶ AgentPhone voice engine
   utterance arrives as `agent.message` (`channel: "voice"`); we reply with
   `{"text": ...}` (NDJSON streaming preferred), `{"action": "transfer"}`, or
   `{"hangup": true}`. Full transcript arrives on `agent.call_ended`.
+- API base URL: `https://api.agentphone.ai/v1`. The webhook signing secret is
+  NOT in the dashboard — it is returned once in the response of
+  `POST /v1/agents/{id}/webhook` (agent-level) or `POST /v1/webhooks`
+  (project-level). We use an **agent-level** webhook for the concierge agent;
+  the account's project-level webhook belongs to a different app
+  (fertilitylitigation.vercel.app) and must never be modified.
 - **Transfer is cold and agent-level**: the `transferNumber` field lives on the
   agent object. To choose Scott vs Monica per call, `PATCH /v1/agents/{id}`
   with the target number immediately before returning `action: "transfer"`.
