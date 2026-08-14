@@ -112,6 +112,10 @@ function finalText(chunks: Array<Record<string, unknown>>): string {
   return String(finalChunk(chunks).text ?? "");
 }
 
+function allText(chunks: Array<Record<string, unknown>>): string {
+  return chunks.map((c) => String(c.text ?? "")).join(" ");
+}
+
 async function outcomeOf(callId: string): Promise<string | null> {
   const { db } = await import("../src/lib/db");
   const rows = await db()`
@@ -160,9 +164,14 @@ async function scenarioOffList() {
     finalText(t2.chunks).toLowerCase().includes("name")
   );
 
+  // Ack-gated: the deny turn holds ~20s for an ack, then offers a message.
   const t3 = await post(voiceMessage(callId, "Nobody Nowhere"));
-  check("denied on explicit name", finalText(t3.chunks).includes("don't see them"));
-  check("transfer action", finalChunk(t3.chunks).action === "transfer");
+  check("denied on explicit name", allText(t3.chunks).includes("don't see them"));
+  check(
+    "no blind transfer — offers message after hold",
+    finalText(t3.chunks).includes("take a message") &&
+      finalChunk(t3.chunks).action === undefined
+  );
 
   await post(
     callEnded(callId, [
@@ -185,8 +194,11 @@ async function scenarioPackage() {
   const t2 = await post(
     voiceMessage(callId, "There's a package for you at the front desk")
   );
-  check("transfer action", finalChunk(t2.chunks).action === "transfer");
-  check("hold message", finalText(t2.chunks).toLowerCase().includes("hold"));
+  check("holds the caller", allText(t2.chunks).toLowerCase().includes("hold"));
+  check(
+    "no blind transfer — offers message after hold",
+    finalText(t2.chunks).includes("take a message")
+  );
 
   await post(
     callEnded(callId, [

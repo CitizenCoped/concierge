@@ -77,9 +77,9 @@ describe("callflow", () => {
     expect(r.action).toBe("transfer");
     expect(r.transferTarget).toBe("scott");
     expect(r.reply).toContain("don't see them on the approved list");
-    expect(notifyEvents(r.effects)).toEqual(
-      expect.arrayContaining(["guest.denied", "call.transfer"])
-    );
+    expect(notifyEvents(r.effects)).toContain("guest.denied");
+    // call.transfer fires from the route only when a transfer actually executes
+    expect(notifyEvents(r.effects)).not.toContain("call.transfer");
     expect(outcomeOf(r.effects)).toBe("no_match_transferred");
   });
 

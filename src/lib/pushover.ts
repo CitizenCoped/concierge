@@ -3,6 +3,7 @@ export interface PushoverMessage {
   message: string;
   priority?: number;
   url?: string;
+  urlTitle?: string;
 }
 
 /**
@@ -24,6 +25,7 @@ export async function sendPushover(msg: PushoverMessage): Promise<boolean> {
   });
   if (msg.priority !== undefined) body.set("priority", String(msg.priority));
   if (msg.url) body.set("url", msg.url);
+  if (msg.urlTitle) body.set("url_title", msg.urlTitle);
   try {
     const res = await fetch("https://api.pushover.net/1/messages.json", {
       method: "POST",

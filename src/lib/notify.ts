@@ -9,6 +9,7 @@ export type NotifyEvent =
   | "call.transfer"
   | "message.taken"
   | "call.ended"
+  | "transfer.request"
   | "system.error"
   | "system.test";
 
@@ -21,6 +22,7 @@ export const EVENT_TITLES: Record<NotifyEvent, string> = {
   "call.transfer": "📲 Transferring",
   "message.taken": "📝 Message From Concierge",
   "call.ended": "☎️ Call Ended",
+  "transfer.request": "📞 Front Desk Holding — Tap to Take the Call",
   "system.error": "🚨 Concierge System Error",
   "system.test": "🔔 Test Notification",
 };
@@ -32,6 +34,7 @@ export interface NotifyInput {
   message: string;
   priority?: number;
   url?: string;
+  urlTitle?: string;
 }
 
 /**
@@ -42,12 +45,21 @@ export interface NotifyInput {
 export async function notify(input: NotifyInput): Promise<void> {
   const title = input.title ?? EVENT_TITLES[input.event];
   const priority =
-    input.priority ?? (input.event === "system.error" ? 1 : undefined);
+    input.priority ??
+    (input.event === "system.error" || input.event === "transfer.request"
+      ? 1
+      : undefined);
   let pushoverOk = false;
   let webpushSent = 0;
   try {
     [pushoverOk, webpushSent] = await Promise.all([
-      sendPushover({ title, message: input.message, priority, url: input.url }),
+      sendPushover({
+        title,
+        message: input.message,
+        priority,
+        url: input.url,
+        urlTitle: input.urlTitle,
+      }),
       sendWebPushToAll({
         event: input.event,
         title,

@@ -134,11 +134,13 @@ function isIncomplete(utterance: string): boolean {
   return words.length < 2 && !VISITOR_RE.test(u) && !PACKAGE_RE.test(u);
 }
 
-function targetName(target: TransferTarget): string {
+export function targetName(target: TransferTarget): string {
   return target === "monica" ? "Monica" : "Scott";
 }
 
-function transferNotifyEffect(target: TransferTarget): Effect {
+/** The route fires this only when a transfer actually executes (after an ack
+ *  or on the blind fail-closed path) — never before. */
+export function transferNotifyEffect(target: TransferTarget): Effect {
   const n = targetName(target);
   return {
     type: "notify",
@@ -163,10 +165,7 @@ function generalTransfer(target: TransferTarget): CallflowResult {
     nextState: { phase: "DONE" },
     action: "transfer",
     transferTarget: target,
-    effects: [
-      transferNotifyEffect(target),
-      { type: "outcome", outcome: "transfer_attempted" },
-    ],
+    effects: [{ type: "outcome", outcome: "transfer_attempted" }],
   };
 }
 
@@ -192,7 +191,6 @@ async function matchAndRespond(
           event: "system.error",
           message: `Guest lookup failed for "${name}" — failing closed to transfer (${String(e)})`,
         },
-        transferNotifyEffect("scott"),
         { type: "outcome", outcome: "error" },
       ],
     };
@@ -233,7 +231,6 @@ async function matchAndRespond(
         event: "guest.denied",
         message: `'${name}' not on list — transferring`,
       },
-      transferNotifyEffect("scott"),
       { type: "outcome", outcome: "no_match_transferred" },
     ],
   };
@@ -328,12 +325,14 @@ export async function step(
 
     case "TAKE_MESSAGE": {
       if (!utterance || DONE_RE.test(utterance) || GOODBYE_RE.test(utterance)) {
+        // No outcome effect: keep the earlier outcome (e.g. no_match_transferred)
+        // rather than overwriting it with a generic hangup.
         return {
           reply:
             "No problem — I'll let Scott and Monica know you called. Thank you! Goodbye.",
           nextState: { phase: "DONE" },
           action: "hangup",
-          effects: [{ type: "outcome", outcome: "hangup" }],
+          effects: [],
         };
       }
       return {
@@ -380,22 +379,27 @@ export async function step(
   }
 }
 
-/** Applied by the route when the transfer PATCH fails: never transfer blind —
- *  apologize and fall back to message taking. Drops the call.transfer notify. */
-export function transferFailedResult(prev: CallflowResult): CallflowResult {
+/** Applied by the route when a transfer can't complete (no ack within the
+ *  wait window, or the PATCH failed): never transfer blind — apologize and
+ *  fall back to message taking. */
+export function transferFailedResult(
+  prev: CallflowResult,
+  reason: "no_ack" | "patch_failed" = "patch_failed"
+): CallflowResult {
   return {
     reply:
       "I'm sorry — I wasn't able to reach Scott or Monica just now. I can take a message; go ahead whenever you're ready.",
     nextState: { phase: "TAKE_MESSAGE", messageParts: [] },
-    effects: [
-      ...prev.effects.filter(
-        (e) => !(e.type === "notify" && e.event === "call.transfer")
-      ),
-      {
-        type: "notify",
-        event: "system.error",
-        message: "Transfer setup failed — falling back to message taking",
-      },
-    ],
+    effects:
+      reason === "patch_failed"
+        ? [
+            ...prev.effects,
+            {
+              type: "notify",
+              event: "system.error",
+              message: "Transfer setup failed — falling back to message taking",
+            },
+          ]
+        : [...prev.effects],
   };
 }

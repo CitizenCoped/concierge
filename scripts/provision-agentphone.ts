@@ -100,16 +100,24 @@ async function main() {
     process.exit(1);
   }
 
-  // 3. Agent-level webhook (create or reuse; secret only returned by the API)
+  // 3. Agent-level webhook (create or reuse; secret only returned by the API).
+  // timeout 60s: transfers hold the concierge ~20s waiting for an ack, so the
+  // default 30s delivery timeout is too tight.
+  const WEBHOOK_TIMEOUT = 60;
   const existing = await api("GET", `/agents/${AGENT_ID}/webhook`);
-  const ex = existing.json as { url?: string; secret?: string } | null;
+  const ex = existing.json as {
+    url?: string;
+    secret?: string;
+    timeout?: number;
+  } | null;
   let secret: string | undefined;
-  if (ex && ex.url === webhookUrl && ex.secret) {
+  if (ex && ex.url === webhookUrl && ex.timeout === WEBHOOK_TIMEOUT && ex.secret) {
     secret = ex.secret;
     console.log(`✅ agent webhook already points at ${webhookUrl}`);
   } else {
     const created = await api("POST", `/agents/${AGENT_ID}/webhook`, {
       url: webhookUrl,
+      timeout: WEBHOOK_TIMEOUT,
     });
     secret = (created.json as { secret?: string } | null)?.secret;
     if (created.status !== 200 || !secret) {
