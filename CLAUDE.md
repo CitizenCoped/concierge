@@ -47,8 +47,15 @@ Front desk phone ──▶ AgentPhone number ──▶ AgentPhone voice engine
 - **Transfer is cold and agent-level**: the `transferNumber` field lives on the
   agent object. To choose Scott vs Monica per call, `PATCH /v1/agents/{id}`
   with the target number immediately before returning `action: "transfer"`.
-  There is **no documented no-answer callback** after a cold transfer — see
-  "Transfer fallback" in PROMPT.md; do not silently assume the call returns.
+  **Live-tested (Aug 2026): cold transfer is one-way.** A declined transfer
+  strands the caller in the target's personal voicemail; the AI never regains
+  the call. Therefore transfers are **ack-gated**: the AI holds the concierge
+  (~20s, `ACK_WAIT_MS`), fires a priority-1 `transfer.request` notification
+  with a link to `/ack/{callDbId}`, and polls `call_acks`. Tapping the link
+  picks the target phone and triggers the real transfer; no tap ⇒ the AI takes
+  a message. The only blind transfer left is the DB-error fail-closed path
+  (the ack system needs the DB). The agent webhook is provisioned with
+  `timeout: 60` to cover the hold.
 - **Neon** is the single source of truth: guest list, call records, transcript
   turns, messages taken, push subscriptions.
 - **Pushover** is fired server-side at every interaction point (call started,
@@ -97,6 +104,41 @@ This repo previously held only that GitHub-Pages privacy policy. The phone
 number on it (619-876-6617) belongs to a different SMS service — never edit
 or delete the file; GitHub Pages settings stay as they are.
 
+## Deployment record (Aug 2026)
+
+- **Prod URL:** https://angel-concierge.vercel.app (Vercel project
+  `angel-concierge`, team `sethrocks-projects`; auto-deploys on push to
+  `main`).
+- **Front-desk number:** **+1 858 944-0764** (`AGENTPHONE_NUMBER`).
+- **Agent:** "Angel Concierge", id `cmsk2931p0xlgg25fubvb1cwp`, webhook voice
+  mode, `sttMode: accurate`, `maxSilenceMs: 60000`, agent-level webhook →
+  `<prod>/api/agentphone/webhook` (timeout 60s).
+- **Neon:** project `angel-concierge` (`damp-flower-09328590`), same DB for
+  dev and prod.
+
+### Deviations from PROMPT.md (all verified by live calls)
+
+1. **Transfer fallback = ack-gated hold** (see Architecture above) — chosen
+   after live testing proved declined cold transfers dead-end in voicemail.
+2. **Per-call state lives in `calls.state` (jsonb)**, not `conversationState`:
+   AgentPhone documents no way to set conversationState from webhook responses.
+3. **Add-guest default start rounds DOWN to the last 15 min** (PROMPT said
+   "next 15 min") — rounding up made just-added guests inactive for up to
+   15 minutes and caused a real denial during acceptance testing.
+4. **Name handling hardened:** a name auto-extracted from an announcement can
+   admit but never deny — on a miss the AI re-asks for the name explicitly;
+   denials only follow an explicitly stated name. STT fragments ("I have a ")
+   get up to two clarification re-asks, then fail safe to a transfer.
+5. **Event catalog additions:** `transfer.request` ("📞 Front Desk Holding —
+   Tap to Take the Call", priority 1) and `system.test` ("🔔 Test
+   Notification"). Original catalog titles unchanged.
+6. **TODO:** `PUSHOVER_USER_KEY` is Scott's individual key. For Monica's phone
+   to get Pushover notifications, create a delivery group (pushover.net) with
+   both user keys and swap it into the env. Web Push already reaches any
+   phone with the PWA installed + subscribed.
+7. Vercel **preview** env vars were not set (CLI kept demanding a git branch);
+   production has everything and only production is used.
+
 ## Environment variables (all required unless noted)
 
 ```
@@ -114,6 +156,8 @@ APP_PASSPHRASE            shared login secret for the PWA
 SCOTT_PHONE               +16198766618
 MONICA_PHONE              +18589452875
 TZ_HOME                   America/Los_Angeles (optional, default this)
+APP_URL                   prod origin, used for notification deep links
+ACK_WAIT_MS               transfer ack hold in ms (optional, default 20000)
 ```
 
 Secrets live in `.env.local` (gitignored) and Vercel project env. **Never
