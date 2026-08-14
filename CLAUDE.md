@@ -68,8 +68,8 @@ Front desk phone ──▶ AgentPhone number ──▶ AgentPhone voice engine
   `notify(event)` which fans out to Pushover + Web Push + DB log. Never call
   Pushover directly from route handlers.
 - App auth: shared passphrase (`APP_PASSPHRASE`) checked by middleware,
-  long-lived httpOnly cookie. All `/api/*` except the AgentPhone webhook and
-  `/privacy` require it.
+  long-lived httpOnly cookie. Everything requires it except the AgentPhone
+  webhook route.
 - Mobile-first UI; test at 390px width. Dark-mode friendly.
 
 ## Repo layout
@@ -77,18 +77,19 @@ Front desk phone ──▶ AgentPhone number ──▶ AgentPhone voice engine
 ```
 CLAUDE.md            this file
 PROMPT.md            the full build prompt (source of truth for requirements)
-public/privacy.html  PRESERVED legacy SMS privacy policy (10DLC compliance) —
-                     keep serving at /privacy; never delete or rewrite it.
+index.html           legacy SMS privacy policy, served by GitHub Pages at
+                     citizencoped.github.io/concierge — LEAVE IN PLACE at repo
+                     root so that live URL keeps working; the app itself does
+                     not serve or link it.
 migrations/          numbered SQL migrations
 scripts/             migrate.ts, provision-agentphone.ts, smoke-test.ts
 src/app/             App Router pages + api routes
 src/lib/             db, agentphone, pushover, webpush, notify, auth
 ```
 
-This repo previously held only the GitHub-Pages privacy policy
-(`index.html` → now `public/privacy.html`). Keep that page reachable; the
-phone number on it (619-876-6617) belongs to a different SMS service — leave
-it as-is.
+This repo previously held only that GitHub-Pages privacy policy. The phone
+number on it (619-876-6617) belongs to a different SMS service — never edit
+or delete the file; GitHub Pages settings stay as they are.
 
 ## Environment variables (all required unless noted)
 

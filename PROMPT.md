@@ -56,10 +56,11 @@ Verify each item; collect anything missing from me before writing code.
      key and note the TODO.
    - **GitHub**: confirm which account owns the existing `origin` remote
      (`git remote -v`) — this repo already pushes to a GitHub Pages repo
-     (`citizencoped/concierge`). We are REUSING this repo: the legacy
-     `index.html` privacy policy must be moved to `public/privacy.html` and
-     kept reachable at `/privacy` (10DLC compliance). Confirm with me before
-     force-changing anything about GitHub Pages settings.
+     (`citizencoped/concierge`). We are REUSING this repo. The legacy
+     `index.html` privacy policy stays untouched at the repo root so its
+     GitHub Pages URL (citizencoped.github.io/concierge) keeps working for
+     SMS/10DLC compliance — the app does not need to serve it. Do not change
+     GitHub Pages settings.
    - **Vercel**: logged-in account/team to deploy under.
 3. Generate VAPID keys locally (`npx web-push generate-vapid-keys`) — do not
    ask me for these.
@@ -84,14 +85,14 @@ Verify each item; collect anything missing from me before writing code.
 
 1. Scaffold Next.js (App Router, TS, ESLint, Tailwind, `src/` dir) **into this
    existing repo** without clobbering `.git`, `CLAUDE.md`, `PROMPT.md`,
-   `README.md`. Move legacy `index.html` → `public/privacy.html` and add a
-   redirect/rewrite so `/privacy` serves it.
+   `README.md`, or the legacy `index.html` (leave it at repo root, unused by
+   the app). Delete the leftover `_to_delete/` folder if present.
 2. Update `README.md` to describe the project (keep the privacy-policy link).
-3. Commit: `chore: scaffold Next.js app, preserve privacy policy`.
+3. Commit: `chore: scaffold Next.js app`.
 
 **CHECK 1**
 - [ ] `npm run build` succeeds.
-- [ ] `npm run dev` → `curl localhost:3000/privacy` returns the legacy policy HTML.
+- [ ] `index.html` untouched (`git diff --stat HEAD~1 -- index.html` empty).
 
 ---
 
@@ -321,12 +322,9 @@ passphrase, compares to `APP_PASSPHRASE` (constant-time), sets 180-day cookie.
 ## Phase 7 — Git & GitHub
 
 1. Ensure clean tree; commits at each phase boundary were made along the way.
-2. Confirm with me: reuse existing `origin` (citizencoped/concierge, currently
-   GitHub Pages) or create a fresh private repo `angel-concierge` via
-   `gh repo create` and repoint origin. Default (my standing answer): **reuse
-   the existing repo**, keep `/privacy` working from the deployed app, and if
-   GitHub Pages was serving the old index.html, leave Pages settings alone
-   until the Vercel URL is live, then ask me whether to disable Pages.
+2. Reuse the existing `origin` (citizencoped/concierge). Leave GitHub Pages
+   settings and `index.html` alone — the Pages-hosted privacy policy URL must
+   stay live for SMS/10DLC compliance.
 3. Push `main`.
 
 **CHECK 7**
@@ -356,7 +354,8 @@ passphrase, compares to `APP_PASSPHRASE` (constant-time), sets 180-day cookie.
    voicemail? Implement the decided fallback from §5 accordingly and redeploy.
 
 **CHECK 8 — full end-to-end acceptance (do these WITH me on the phone)**
-- [ ] `curl https://<prod>/privacy` serves the legacy policy.
+- [ ] `curl https://citizencoped.github.io/concierge/` still serves the legacy
+      privacy policy (untouched by the push).
 - [ ] Add guest "Test Visitor" (active now) in the PWA from a phone.
 - [ ] Call the AgentPhone number, announce "Test Visitor": AI admits; Pushover
       "✅ Guest Admitted — Guest = Test Visitor has been let into the
