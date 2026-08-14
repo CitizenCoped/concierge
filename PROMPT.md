@@ -238,6 +238,11 @@ States & behavior:
 1. **GREETING** (first `agent.message` of a call): fire `call.started` notify.
    Say: "Hi, this is Scott and Monica's automated concierge assistant. How can
    I help you?"
+   *(Implementation note: the greeting is spoken by the agent-level
+   `beginMessage` at pickup. If the caller's first webhook utterance already
+   has content, the state machine answers it directly without re-greeting;
+   the spoken fallback greeting only fires on an empty/greeting-only first
+   utterance.)*
 2. **INTENT**: classify the concierge's utterance:
    - visitor announcement → ASK_NAME (or extract name directly if spoken)
    - anything else (package, maintenance, question for Scott/Monica) →

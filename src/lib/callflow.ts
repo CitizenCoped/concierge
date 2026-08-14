@@ -237,12 +237,10 @@ export async function step(
           effects: [started],
         };
       }
+      // The agent-level beginMessage already greeted the caller — when their
+      // first utterance has content, answer it directly without re-greeting.
       const inner = await handleIntent(utterance, deps);
-      return {
-        ...inner,
-        reply: `Hi, this is Scott and Monica's automated concierge assistant. ${inner.reply}`,
-        effects: [started, ...inner.effects],
-      };
+      return { ...inner, effects: [started, ...inner.effects] };
     }
 
     case "INTENT": {
