@@ -28,6 +28,8 @@ export type CallPhase =
 export interface CallState {
   phase: CallPhase;
   messageParts?: string[];
+  /** number of clarification re-asks already used in INTENT (loop guard) */
+  clarifies?: number;
 }
 
 export const INITIAL_STATE: CallState = { phase: "GREETING" };
@@ -70,25 +72,41 @@ const NAME_PATTERNS: RegExp[] = [
     `(?:i have|i've got|we have|there is|there's)\\s+(?:an?\\s+)?(?:visitor|guest)?\\s*(?:named|called|name is)?\\s*(${NAME})\\s+(?:here|in the lobby|at the front desk|downstairs|for you|to see|waiting)`,
     "i"
   ),
-  new RegExp(`(?:visitor|guest)\\s+(?:named|called|name is|is)\\s+(${NAME})$`, "i"),
+  new RegExp(
+    `(?:visitor|guest)\\s+(?:named|called|name is|is)\\s+(?:an?\\s+|the\\s+)?(${NAME})[.!?]?$`,
+    "i"
+  ),
+  new RegExp(
+    `(?:it is|it's|this is|named|called|name is)\\s+(?:an?\\s+|the\\s+)?(${NAME})[.!?]?$`,
+    "i"
+  ),
   new RegExp(
     `^(${NAME})\\s+is\\s+(?:here|in the lobby|at the front desk|downstairs|waiting)`,
     "i"
   ),
 ];
 
+// Words that can never be a visitor's name (STT phrasing debris — a real call
+// once captured "here" as the name and wrongly denied the guest).
+const NON_NAME_RE =
+  /^(a|an|the|for|to|is|it|someone|somebody|here|there|them|him|her|you|visitor|guest|waiting|lobby)$/i;
+
+function plausibleName(candidate: string | undefined): string | null {
+  const c = candidate?.trim().replace(/^(an?|the)\s+/i, "");
+  if (!c) return null;
+  if (NON_NAME_RE.test(c)) return null; // exact filler words ("here", "visitor", …)
+  // location/delivery phrases are never names, but a name may CONTAIN a filler
+  // word (the acceptance-test guest is literally called "Test Visitor")
+  if (/\b(front desk|lobby|package|delivery)\b/i.test(c)) return null;
+  if (/^(visitor|guest)\b/i.test(c)) return null; // "visitor John" is phrasing debris
+  return c;
+}
+
 function extractName(utterance: string): string | null {
   const u = utterance.trim().replace(/[.!?]+$/, "");
   for (const re of NAME_PATTERNS) {
-    const m = u.match(re);
-    const candidate = m?.[1]?.trim();
-    if (
-      candidate &&
-      !/^(a|an|the|for|to|is|someone|somebody)$/i.test(candidate) &&
-      !/\b(visitor|guest|package|delivery)\b/i.test(candidate)
-    ) {
-      return candidate;
-    }
+    const name = plausibleName(u.match(re)?.[1]);
+    if (name) return name;
   }
   return null;
 }
@@ -99,8 +117,21 @@ function cleanSpokenName(utterance: string): string {
     .replace(/^(his|her|their)\s+name\s+is\s+/i, "")
     .replace(/^(the\s+)?name\s+is\s+/i, "")
     .replace(/^(it\s+is|it's|its|this\s+is|that\s+would\s+be)\s+/i, "")
+    .replace(/^(an?|the)\s+/i, "")
     .replace(/[.!?,]+$/g, "")
     .trim();
+}
+
+/** STT sometimes delivers dangling fragments ("I have a ") as whole turns —
+ *  never act on them, ask again instead. */
+function isIncomplete(utterance: string): boolean {
+  const u = utterance.trim();
+  if (!u) return false; // empty is handled by GREETING_ONLY_RE
+  const words = u.replace(/[.!?,]+$/g, "").split(/\s+/);
+  if (/\b(a|an|the|to|for|of|and|is|uh|um|with)$/i.test(u.replace(/[.!?,\s]+$/g, ""))) {
+    return true;
+  }
+  return words.length < 2 && !VISITOR_RE.test(u) && !PACKAGE_RE.test(u);
 }
 
 function targetName(target: TransferTarget): string {
@@ -141,7 +172,8 @@ function generalTransfer(target: TransferTarget): CallflowResult {
 
 async function matchAndRespond(
   name: string,
-  deps: CallflowDeps
+  deps: CallflowDeps,
+  opts: { denyOnMiss: boolean } = { denyOnMiss: true }
 ): Promise<CallflowResult> {
   let result: GuestMatch;
   try {
@@ -180,6 +212,15 @@ async function matchAndRespond(
       ],
     };
   }
+  if (!opts.denyOnMiss) {
+    // The name was auto-extracted from the announcement and may be STT noise —
+    // confirm it explicitly before ever denying anyone.
+    return {
+      reply: "I may have misheard — what's the visitor's name, exactly?",
+      nextState: { phase: "ASK_NAME" },
+      effects: [],
+    };
+  }
   return {
     reply:
       "I don't see them on the approved list. Please hold for just a moment while I check with Scott or Monica.",
@@ -200,8 +241,21 @@ async function matchAndRespond(
 
 async function handleIntent(
   utterance: string,
-  deps: CallflowDeps
+  deps: CallflowDeps,
+  state?: CallState
 ): Promise<CallflowResult> {
+  if (isIncomplete(utterance)) {
+    const clarifies = state?.clarifies ?? 0;
+    if (clarifies < 2) {
+      return {
+        reply: "Sorry — could you say that again?",
+        nextState: { phase: "INTENT", clarifies: clarifies + 1 },
+        effects: [],
+      };
+    }
+    // Repeatedly unintelligible — fail safe to a transfer, never guess.
+    return generalTransfer("scott");
+  }
   const isVisitor = VISITOR_RE.test(utterance) && !PACKAGE_RE.test(utterance);
   if (!isVisitor) {
     return generalTransfer(MONICA_RE.test(utterance) ? "monica" : "scott");
@@ -214,7 +268,9 @@ async function handleIntent(
       effects: [],
     };
   }
-  return matchAndRespond(name, deps);
+  // Auto-extracted name: admit on a match, but never deny on a miss —
+  // re-ask for the name explicitly instead (denyOnMiss: false).
+  return matchAndRespond(name, deps, { denyOnMiss: false });
 }
 
 export async function step(
@@ -239,7 +295,7 @@ export async function step(
       }
       // The agent-level beginMessage already greeted the caller — when their
       // first utterance has content, answer it directly without re-greeting.
-      const inner = await handleIntent(utterance, deps);
+      const inner = await handleIntent(utterance, deps, state);
       return { ...inner, effects: [started, ...inner.effects] };
     }
 
@@ -254,7 +310,7 @@ export async function step(
           effects: [],
         };
       }
-      return handleIntent(utterance, deps);
+      return handleIntent(utterance, deps, state);
     }
 
     case "ASK_NAME": {

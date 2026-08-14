@@ -247,6 +247,12 @@ States & behavior:
    - visitor announcement → ASK_NAME (or extract name directly if spoken)
    - anything else (package, maintenance, question for Scott/Monica) →
      TRANSFER
+   *(Implementation notes from live testing: STT sometimes delivers dangling
+   fragments — e.g. "I have a " — as complete turns; INTENT asks for
+   clarification up to twice before failing safe to TRANSFER. A name
+   auto-extracted from an announcement is best-effort: on a match it admits,
+   but on a miss it re-asks for the name explicitly (ASK_NAME) rather than
+   denying — a deny can only follow a name the concierge stated explicitly.)*
 3. **ASK_NAME → MATCH**: run the guest query (Phase 2). 
    - Exactly one active match → say "Yes — {name} is expected. It's okay to
      send them up. Thank you!"; fire `guest.admitted`; mark outcome

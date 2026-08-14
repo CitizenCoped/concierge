@@ -57,8 +57,11 @@ export function timeRemaining(endsAt: Date | string, now = new Date()): string {
   return `${m}m left`;
 }
 
-/** Now in LA, rounded UP to the next 15 minutes — the add-guest default. */
+/** Now, rounded DOWN to the last 15 minutes — the add-guest default.
+ *  Rounding down (a deviation from PROMPT §6's "next 15 min") means a guest
+ *  added while their visitor is standing at the desk is active immediately;
+ *  rounding up caused real denials during acceptance testing. */
 export function defaultStart(now = new Date()): Date {
   const ms = 15 * 60_000;
-  return new Date(Math.ceil(now.getTime() / ms) * ms);
+  return new Date(Math.floor(now.getTime() / ms) * ms);
 }

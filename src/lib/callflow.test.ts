@@ -149,6 +149,53 @@ describe("callflow", () => {
     ).toBeTruthy();
   });
 
+  it("regression: extracts the name from 'It is a test visitor' phrasing", async () => {
+    const deps = depsWith(async (name) => {
+      expect(name.toLowerCase()).toBe("test visitor");
+      return { match: guest("Test Visitor"), candidates: [guest("Test Visitor")] };
+    });
+    const r = await step(
+      { phase: "GREETING" },
+      "Yeah, I have a visitor here at the front desk. It is a test visitor.",
+      deps
+    );
+    expect(r.action).toBe("hangup");
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
+  });
+
+  it("regression: never treats 'here' as a visitor name — asks instead", async () => {
+    const r = await step(
+      { phase: "INTENT" },
+      "I have a visitor here at the front desk",
+      noMatch
+    );
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.action).toBeUndefined();
+    expect(notifyEvents(r.effects)).not.toContain("guest.denied");
+  });
+
+  it("auto-extracted name miss re-asks instead of denying", async () => {
+    const r = await step(
+      { phase: "INTENT" },
+      "I have Ghost Person here in the lobby",
+      noMatch
+    );
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.action).toBeUndefined();
+    expect(r.reply.toLowerCase()).toContain("name");
+    expect(notifyEvents(r.effects)).not.toContain("guest.denied");
+  });
+
+  it("STT fragments get a clarification, then fail safe to transfer", async () => {
+    const first = await step({ phase: "INTENT" }, "I have a ", noMatch);
+    expect(first.reply).toContain("say that again");
+    expect(first.nextState).toEqual({ phase: "INTENT", clarifies: 1 });
+    const second = await step(first.nextState, "and then the ", noMatch);
+    expect(second.nextState).toEqual({ phase: "INTENT", clarifies: 2 });
+    const third = await step(second.nextState, "with a ", noMatch);
+    expect(third.action).toBe("transfer");
+  });
+
   it("goodbye closes politely with a hangup", async () => {
     const r = await step({ phase: "INTENT" }, "Okay that's all, goodbye", noMatch);
     expect(r.action).toBe("hangup");

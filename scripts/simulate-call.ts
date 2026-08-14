@@ -155,8 +155,14 @@ async function scenarioOffList() {
   const t2 = await post(
     voiceMessage(callId, "I have Nobody Nowhere here in the lobby")
   );
-  check("denied", finalText(t2.chunks).includes("don't see them"));
-  check("transfer action", finalChunk(t2.chunks).action === "transfer");
+  check(
+    "auto-extracted miss re-asks the name",
+    finalText(t2.chunks).toLowerCase().includes("name")
+  );
+
+  const t3 = await post(voiceMessage(callId, "Nobody Nowhere"));
+  check("denied on explicit name", finalText(t3.chunks).includes("don't see them"));
+  check("transfer action", finalChunk(t3.chunks).action === "transfer");
 
   await post(
     callEnded(callId, [
