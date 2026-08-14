@@ -9,7 +9,8 @@ export type NotifyEvent =
   | "call.transfer"
   | "message.taken"
   | "call.ended"
-  | "system.error";
+  | "system.error"
+  | "system.test";
 
 /** Canonical Pushover titles — keep these exact strings (see PROMPT.md §3).
  *  call.transfer is dynamic: pass title `📲 Transferring to {target}`. */
@@ -21,6 +22,7 @@ export const EVENT_TITLES: Record<NotifyEvent, string> = {
   "message.taken": "📝 Message From Concierge",
   "call.ended": "☎️ Call Ended",
   "system.error": "🚨 Concierge System Error",
+  "system.test": "🔔 Test Notification",
 };
 
 export interface NotifyInput {
