@@ -33,6 +33,11 @@ beforeAll(async () => {
   await seed(N("Dupla% Jones"), -60, 60);
   // archived guest, otherwise active
   await seed(N("Archie% Vault"), -60, 60, true);
+  // fuzzy: STT-mangled surname (the live "Ebsen" → "Epson"/"Edson" case)
+  await seed(N("Malice% Ebsen"), -60, 60);
+  // fuzzy ambiguity: two guests within edit distance of the same misheard name
+  await seed(N("Twin% Abcde"), -60, 60);
+  await seed(N("Twin% Abcdi"), -60, 60);
 });
 
 afterAll(async () => {
@@ -72,5 +77,26 @@ describe("matchGuest", () => {
     const r = await matchGuest(N("Quorra% Brown"));
     expect(r.match).toBeNull();
     expect(r.candidates).toHaveLength(0);
+  });
+
+  it("fuzzy: admits an STT-mangled surname (Ebsen heard as Epson)", async () => {
+    const r = await matchGuest(N("Malice% Epson"));
+    expect(r.match?.name).toBe(N("Malice% Ebsen"));
+  });
+
+  it("fuzzy: admits when the last token is close and a middle name context differs", async () => {
+    const r = await matchGuest(N("Malice% Edson"));
+    expect(r.match?.name).toBe(N("Malice% Ebsen"));
+  });
+
+  it("fuzzy: fails closed when two guests are equally close", async () => {
+    const r = await matchGuest(N("Twin% Abcdz"));
+    expect(r.match).toBeNull();
+    expect(r.candidates.length).toBeGreaterThan(1);
+  });
+
+  it("fuzzy: does not admit wildly different names", async () => {
+    const r = await matchGuest("Completely Unrelated Person");
+    expect(r.match).toBeNull();
   });
 });

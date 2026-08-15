@@ -225,6 +225,16 @@ async function ackGatedTransfer(
 ): Promise<CallflowResult> {
   write({ text: result.reply, interim: true });
 
+  // Mark the hold BEFORE polling: anything the caller says during the ~20s
+  // hold arrives as a separate invocation, which must see HOLDING (and say
+  // "one moment") rather than re-run the previous state's deny/transfer.
+  try {
+    await db()`update calls set state = '{"phase":"HOLDING"}'::jsonb
+               where id = ${callDbId}`;
+  } catch (e) {
+    console.error("webhook: failed to mark HOLDING state", e);
+  }
+
   const denied = result.effects.find(
     (e) => e.type === "notify" && e.event === "guest.denied"
   );

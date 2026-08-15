@@ -196,6 +196,30 @@ describe("callflow", () => {
     expect(third.action).toBe("transfer");
   });
 
+  it("regression: ASK_NAME rejects phrasing debris instead of denying on it", async () => {
+    const r = await step({ phase: "ASK_NAME" }, "a visitor for them", noMatch);
+    expect(r.reply).toContain("name");
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(notifyEvents(r.effects)).not.toContain("guest.denied");
+    // third strike falls safe to a transfer, never a guessy lookup
+    const r3 = await step(
+      { phase: "ASK_NAME", clarifies: 2 },
+      "someone here",
+      noMatch
+    );
+    expect(r3.action).toBe("transfer");
+  });
+
+  it("HOLDING: caller speech during the ack hold gets a wait reply, then message fallback", async () => {
+    const first = await step({ phase: "HOLDING" }, "Hello? Are you there?", noMatch);
+    expect(first.reply).toContain("moment");
+    expect(first.nextState).toEqual({ phase: "HOLDING", holds: 1 });
+    expect(first.effects).toHaveLength(0);
+    const third = await step({ phase: "HOLDING", holds: 2 }, "Hello?", noMatch);
+    expect(third.nextState.phase).toBe("TAKE_MESSAGE");
+    expect(third.reply).toContain("message");
+  });
+
   it("goodbye closes politely with a hangup", async () => {
     const r = await step({ phase: "INTENT" }, "Okay that's all, goodbye", noMatch);
     expect(r.action).toBe("hangup");

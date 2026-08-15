@@ -27,6 +27,11 @@ export interface GuestMatch {
  * AND the token comparison is safe: either the spoken name is first-name-only
  * or the guest entry is first-name-only. A spoken "Sarah Jones" never admits
  * a listed "Sarah Smith".
+ * Pass 3 (only if pass 2 found nothing): STT tolerance — Levenshtein distance
+ * on the whole name (≤ max(2, len/6)), or first tokens within 1 edit AND last
+ * tokens within 2 edits (covers dropped middle names). Admit iff exactly 1
+ * row; any ambiguity fails closed. Live-driven: STT heard "Epson"/"Edson"
+ * for a real guest named "Ebsen" and exact matching denied her.
  */
 export async function matchGuest(spokenName: string): Promise<GuestMatch> {
   const sql = db();
@@ -54,8 +59,35 @@ export async function matchGuest(spokenName: string): Promise<GuestMatch> {
         or position(' ' in trim(name)) = 0
       )
   `) as Guest[];
+  if (fallback.length > 0) {
+    return {
+      match: fallback.length === 1 ? fallback[0] : null,
+      candidates: fallback,
+    };
+  }
+
+  if (trimmed.length < 4) return { match: null, candidates: [] };
+  const tokens = trimmed.toLowerCase().split(/\s+/);
+  const firstToken = tokens[0];
+  const lastToken = tokens[tokens.length - 1];
+  const fuzzy = (await sql`
+    select * from guests
+    where archived = false
+      and now() between starts_at and ends_at
+      and (
+        levenshtein(lower(trim(name)), lower(${trimmed}))
+          <= greatest(2, length(${trimmed}) / 6)
+        or (
+          ${tokens.length > 1}
+          and position(' ' in trim(name)) > 0
+          and levenshtein(lower(split_part(trim(name), ' ', 1)), ${firstToken}) <= 1
+          and levenshtein(
+                lower(regexp_replace(trim(name), '^.*\\s', '')), ${lastToken}) <= 2
+        )
+      )
+  `) as Guest[];
   return {
-    match: fallback.length === 1 ? fallback[0] : null,
-    candidates: fallback,
+    match: fuzzy.length === 1 ? fuzzy[0] : null,
+    candidates: fuzzy,
   };
 }

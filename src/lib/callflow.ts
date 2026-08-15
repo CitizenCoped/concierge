@@ -21,6 +21,7 @@ export type CallPhase =
   | "GREETING"
   | "INTENT"
   | "ASK_NAME"
+  | "HOLDING"
   | "TAKE_MESSAGE"
   | "CONFIRM_MESSAGE"
   | "DONE";
@@ -28,8 +29,10 @@ export type CallPhase =
 export interface CallState {
   phase: CallPhase;
   messageParts?: string[];
-  /** number of clarification re-asks already used in INTENT (loop guard) */
+  /** number of clarification re-asks already used (loop guard) */
   clarifies?: number;
+  /** caller utterances answered while the transfer-ack hold is running */
+  holds?: number;
 }
 
 export const INITIAL_STATE: CallState = { phase: "GREETING" };
@@ -114,6 +117,7 @@ function extractName(utterance: string): string | null {
 function cleanSpokenName(utterance: string): string {
   return utterance
     .trim()
+    .replace(/^((yes|yeah|yep|okay|ok|um|uh|so|well)[,.!\s]+)+/i, "")
     .replace(/^(his|her|their)\s+name\s+is\s+/i, "")
     .replace(/^(the\s+)?name\s+is\s+/i, "")
     .replace(/^(it\s+is|it's|its|this\s+is|that\s+would\s+be)\s+/i, "")
@@ -312,15 +316,41 @@ export async function step(
 
     case "ASK_NAME": {
       if (GOODBYE_RE.test(utterance)) return politeClose(true);
-      const name = cleanSpokenName(utterance);
+      // The reply here is matched (and can be denied) as a NAME — so phrasing
+      // debris ("a visitor for them") must re-ask, never run a doomed lookup.
+      const name = plausibleName(cleanSpokenName(utterance));
       if (!name) {
+        const clarifies = state.clarifies ?? 0;
+        if (clarifies < 2) {
+          return {
+            reply: "Sorry — what was the visitor's name?",
+            nextState: { ...state, clarifies: clarifies + 1 },
+            effects: [],
+          };
+        }
+        return generalTransfer("scott");
+      }
+      return matchAndRespond(name, deps);
+    }
+
+    case "HOLDING": {
+      // The transfer-ack hold is still streaming in another invocation; keep
+      // the caller company without touching the flow. If we're stuck here
+      // (hold crashed, or the caller keeps talking), fall back to a message.
+      const holds = state.holds ?? 0;
+      if (holds >= 2) {
         return {
-          reply: "Sorry — what was the visitor's name?",
-          nextState: state,
+          reply:
+            "I'm sorry for the wait — I wasn't able to reach Scott or Monica. I can take a message; go ahead whenever you're ready.",
+          nextState: { phase: "TAKE_MESSAGE", messageParts: [] },
           effects: [],
         };
       }
-      return matchAndRespond(name, deps);
+      return {
+        reply: "One moment, please — still checking.",
+        nextState: { ...state, holds: holds + 1 },
+        effects: [],
+      };
     }
 
     case "TAKE_MESSAGE": {
