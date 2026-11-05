@@ -68,6 +68,14 @@ describe("name extraction", () => {
       looksLikeGuestPermissionQuestion("Is Jane allowed to park in the garage?")
     ).toBe(true);
   });
+
+  it("does not treat pronouns as guest names in permission questions", () => {
+    expect(extractQuestionGuestName("Is she allowed to park in the garage?")).toBe(
+      null
+    );
+    expect(extractQuestionGuestName("Can he come up?")).toBe(null);
+    expect(extractQuestionGuestName("Are they permitted entry?")).toBe(null);
+  });
 });
 
 describe("guest_info permission Q&A", () => {
@@ -174,6 +182,54 @@ describe("guest_info permission Q&A", () => {
     expect(r.action).toBe("hangup");
     expect(outcomeOf(r.effects)).toBe("guest_admitted");
     expect(notifyEvents(r.effects)).toContain("guest.admitted");
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+  });
+
+  it("visitor arrival still admits when the line also mentions parking", async () => {
+    let qaCalls = 0;
+    const deps = depsWith(
+      async (name) => {
+        expect(name).toBe("Jane McDaniel");
+        return { match: jane, candidates: [jane] };
+      },
+      async () => {
+        qaCalls += 1;
+        return { answer: "yes", reply: "should not run for visitor admit" };
+      }
+    );
+    const r = await step(
+      { phase: "INTENT" },
+      "Jane McDaniel is here in the lobby — is she allowed to park in the garage?",
+      deps
+    );
+    expect(qaCalls).toBe(0);
+    expect(r.action).toBe("hangup");
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
+    expect(notifyEvents(r.effects)).toContain("guest.admitted");
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+  });
+
+  it("pronoun-only parking question does not answer from another guest's notes", async () => {
+    const sue = guest("Sue Park", janeNotes);
+    let answered = false;
+    const deps = depsWith(
+      async (name) => {
+        // Would fuzzy-match "she" → "Sue" if pronouns were accepted as names.
+        expect(name).not.toMatch(/^(she|he|they)$/i);
+        return { match: sue, candidates: [sue] };
+      },
+      async () => {
+        answered = true;
+        return { answer: "yes", reply: "should not run for pronoun-only Q" };
+      }
+    );
+    const r = await step(
+      { phase: "INTENT" },
+      "Is she allowed to park in the garage?",
+      deps
+    );
+    expect(answered).toBe(false);
+    expect(r.action).toBe("transfer");
     expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
   });
 });
