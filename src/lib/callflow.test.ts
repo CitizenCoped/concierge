@@ -52,6 +52,17 @@ describe("name extraction", () => {
     expect(isPartialName("Connor")).toBe(true);
     expect(isPartialName("Sarah Connor")).toBe(false);
   });
+
+  it("preserves name tokens that look like clause verbs", () => {
+    expect(cleanSpokenName("Will Smith")).toBe("Will Smith");
+    expect(cleanSpokenName("John May")).toBe("John May");
+    expect(cleanSpokenName("May Wong")).toBe("May Wong");
+    expect(cleanSpokenName("Do Nguyen")).toBe("Do Nguyen");
+    expect(cleanSpokenName("Can Patel")).toBe("Can Patel");
+    expect(cleanSpokenName("John Smith. Will he be allowed up?")).toBe(
+      "John Smith"
+    );
+  });
 });
 
 describe("callflow", () => {

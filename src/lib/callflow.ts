@@ -99,8 +99,11 @@ const NAME_PATTERNS: RegExp[] = [
   ),
 ];
 
+// Require a real separator before the marker so leading name tokens like
+// "Will"/"May"/"Do"/"Can" are kept; those four also need a following word so
+// "John May" stays intact while "John Smith. Can he come up?" still strips.
 const TRAILING_CLAUSE_RE =
-  /\s*[,.]?\s*(?:is|are|was|were|can|could|should|will|would|do|does|did|may|allowed|ok|okay|please|thanks|thank you)\b.*$/i;
+  /(?:\s*[,.]\s*|\s+)(?:(?:is|are|was|were|could|should|would|does|did|allowed|ok|okay|please|thanks|thank you)\b|(?:can|will|may|do)\b(?=\s+\S)).*$/i;
 
 // Words that can never be a visitor's name (STT phrasing debris — a real call
 // once captured "here" as the name and wrongly denied the guest).
