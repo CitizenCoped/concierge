@@ -21,7 +21,8 @@ const AGENT_ID = process.env.AGENTPHONE_AGENT_ID;
 const NUMBER = process.env.AGENTPHONE_NUMBER;
 const SCOTT = process.env.SCOTT_PHONE;
 
-const GREETING = "Hi, Scott and Monica's concierge — how can I help?";
+const GREETING =
+  "Hello, Scott and Monica's AI assistant here. What's up?";
 
 function headers(): Record<string, string> {
   return { Authorization: `Bearer ${API_KEY}`, "Content-Type": "application/json" };

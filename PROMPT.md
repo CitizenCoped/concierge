@@ -236,7 +236,7 @@ unit-testable. Persist per-call state keyed by `callId` (DB table or the
 States & behavior:
 
 1. **GREETING** (first `agent.message` of a call): fire `call.started` notify.
-   Say: "Hi, Scott and Monica's concierge — how can I help?"
+   Say: "Hello, Scott and Monica's AI assistant here. What's up?"
    *(Implementation note: the greeting is spoken by the agent-level
    `beginMessage` at pickup. If the caller's first webhook utterance already
    has content, the state machine answers it directly without re-greeting;
