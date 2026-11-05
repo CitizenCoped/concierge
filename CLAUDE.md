@@ -135,8 +135,9 @@ or delete the file; GitHub Pages settings stay as they are.
    transfer. Matching is phonetic+fuzzy (Soundex + Levenshtein) and admits
    only on exactly one active candidate.
 5. **Event catalog additions:** `transfer.request` (legacy ack-hold title;
-   no longer emitted on the hot path) and `system.test` ("🔔 Test
-   Notification"). Original catalog titles unchanged.
+   no longer emitted on the hot path), `guest.info_answered` ("ℹ️ Guest Info
+   Answered"), and `system.test` ("🔔 Test Notification"). Original catalog
+   titles unchanged.
 6. **TODO:** `PUSHOVER_USER_KEY` is Scott's individual key. For Monica's phone
    to get Pushover notifications, create a delivery group (pushover.net) with
    both user keys and swap it into the env. Web Push already reaches any
@@ -162,6 +163,9 @@ SCOTT_PHONE               +16198766618
 MONICA_PHONE              +18589452875
 TZ_HOME                   America/Los_Angeles (optional, default this)
 APP_URL                   prod origin, used for notification deep links
+AI_GATEWAY_API_KEY        Vercel AI Gateway key (optional on Vercel OIDC;
+                          required locally for Guest Info permission Q&A)
+AI_GATEWAY_MODEL          optional model id (default openai/gpt-4.1-mini)
 ```
 
 Secrets live in `.env.local` (gitignored) and Vercel project env. **Never

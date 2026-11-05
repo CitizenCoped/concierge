@@ -12,8 +12,10 @@ export interface Guest {
   archived: boolean;
 }
 
-/** Minimal guest row needed for name matching (call-scoped snapshot). */
-export type GuestNameRow = Pick<Guest, "id" | "name">;
+/** Minimal guest row for name matching + Guest Info Q&A (call-scoped snapshot). */
+export type GuestNameRow = Pick<Guest, "id" | "name"> & {
+  guest_info?: string | null;
+};
 
 export interface GuestMatch {
   /** Non-null only when the visitor may be admitted (exactly one unambiguous match). */

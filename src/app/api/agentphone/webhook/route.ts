@@ -4,6 +4,7 @@ import {
   matchGuestAgainst,
   type GuestNameRow,
 } from "@/lib/db/guests";
+import { answerFromGuestInfo } from "@/lib/guestinfo";
 import { verifySignature } from "@/lib/agentphone/signature";
 import { setTransferNumber } from "@/lib/agentphone/client";
 import { notify } from "@/lib/notify";
@@ -119,7 +120,11 @@ async function guestsForCall(state: CallState): Promise<GuestNameRow[]> {
   // undefined = never loaded; [] = loaded, no active guests.
   if (state.guestSnapshot !== undefined) return state.guestSnapshot;
   const rows = await listActiveGuests();
-  return rows.map((g) => ({ id: g.id, name: g.name }));
+  return rows.map((g) => ({
+    id: g.id,
+    name: g.name,
+    guest_info: g.guest_info,
+  }));
 }
 
 function handleVoiceMessage(payload: WebhookPayload): Response {
@@ -142,13 +147,16 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         const snapshot = await guestsForCall(state);
         const deps = {
           matchGuest: async (name: string) => matchGuestAgainst(name, snapshot),
+          answerGuestInfo: answerFromGuestInfo,
         };
 
-        // Peek: only fill dead air when a guest lookup is likely.
+        // Peek: only fill dead air when a guest lookup or notes Q&A is likely.
         const maybeLookup =
           state.phase === "ASK_NAME" ||
           ((state.phase === "GREETING" || state.phase === "INTENT") &&
-            /\b(visitor|guest|here|lobby|name)\b/i.test(utterance));
+            /\b(visitor|guest|here|lobby|name|allowed|park|garage|access)\b/i.test(
+              utterance
+            ));
         if (maybeLookup) {
           write({ text: "One moment.", interim: true });
         }
