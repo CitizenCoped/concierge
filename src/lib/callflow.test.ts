@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   INITIAL_STATE,
+  cleanSpokenName,
+  extractName,
+  isPartialName,
   step,
   transferFailedResult,
   type CallflowDeps,
@@ -34,10 +37,28 @@ function outcomeOf(effects: Effect[]): string | undefined {
   return effects.findLast((e) => e.type === "outcome")?.outcome;
 }
 
+describe("name extraction", () => {
+  it("extracts Sarah Connor from a sentence with a trailing question", () => {
+    const u =
+      "Yeah, I have a guest here. Her name is Sarah Connor. Is she allowed to come up?";
+    expect(extractName(u)).toBe("Sarah Connor");
+    expect(cleanSpokenName("Sarah Connor. Is she allowed to come up?")).toBe(
+      "Sarah Connor"
+    );
+  });
+
+  it("does not swallow trailing clauses into the name", () => {
+    expect(cleanSpokenName("John Smith. Can he come up?")).toBe("John Smith");
+    expect(isPartialName("Connor")).toBe(true);
+    expect(isPartialName("Sarah Connor")).toBe(false);
+  });
+});
+
 describe("callflow", () => {
   it("greets and fires call.started on the first turn", async () => {
     const r = await step(INITIAL_STATE, "", noMatch);
-    expect(r.reply).toContain("automated concierge assistant");
+    expect(r.reply).toMatch(/concierge/i);
+    expect(r.reply.length).toBeLessThan(80);
     expect(notifyEvents(r.effects)).toContain("call.started");
     expect(r.nextState.phase).toBe("INTENT");
   });
@@ -58,6 +79,21 @@ describe("callflow", () => {
     expect(outcomeOf(r.effects)).toBe("guest_admitted");
   });
 
+  it("live regression: Sarah Connor announcement extracts cleanly and admits", async () => {
+    const deps = depsWith(async (name) => {
+      expect(name).toBe("Sarah Connor");
+      return { match: guest("Sera Connor"), candidates: [guest("Sera Connor")] };
+    });
+    const r = await step(
+      { phase: "INTENT" },
+      "Yeah, I have a guest here. Her name is Sarah Connor. Is she allowed to come up?",
+      deps
+    );
+    expect(r.action).toBe("hangup");
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
+    expect(r.reply).toContain("Sera Connor");
+  });
+
   it("announcement without a name asks for it, then admits", async () => {
     const ask = await step({ phase: "INTENT" }, "There's a visitor for you", noMatch);
     expect(ask.nextState.phase).toBe("ASK_NAME");
@@ -72,11 +108,12 @@ describe("callflow", () => {
     expect(outcomeOf(r.effects)).toBe("guest_admitted");
   });
 
-  it("expired/future/unknown guest (no match) → denied + transfer", async () => {
+  it("expired/unknown guest (no match) → denied + immediate transfer", async () => {
     const r = await step({ phase: "ASK_NAME" }, "Nobody Realname", noMatch);
     expect(r.action).toBe("transfer");
     expect(r.transferTarget).toBe("scott");
-    expect(r.reply).toContain("don't see them on the approved list");
+    expect(r.reply.toLowerCase()).toContain("connecting");
+    expect(r.reply.toLowerCase()).not.toContain("please hold for just a moment");
     expect(notifyEvents(r.effects)).toContain("guest.denied");
     // call.transfer fires from the route only when a transfer actually executes
     expect(notifyEvents(r.effects)).not.toContain("call.transfer");
@@ -89,8 +126,47 @@ describe("callflow", () => {
       candidates: [guest("Sam Ash"), guest("Sam Bell")],
     }));
     const r = await step({ phase: "ASK_NAME" }, "Sam", deps);
-    expect(r.action).toBe("transfer");
-    expect(outcomeOf(r.effects)).toBe("no_match_transferred");
+    // single-token miss re-asks once for first+last before transferring
+    expect(r.action).toBeUndefined();
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.askedFullName).toBe(true);
+    expect(r.reply.toLowerCase()).toContain("first and last");
+
+    const denied = await step(
+      { phase: "ASK_NAME", askedFullName: true },
+      "Sam",
+      deps
+    );
+    expect(denied.action).toBe("transfer");
+    expect(outcomeOf(denied.effects)).toBe("no_match_transferred");
+  });
+
+  it("ASK_NAME partial last-name miss re-asks once for first and last", async () => {
+    const first = await step({ phase: "ASK_NAME" }, "Connor", noMatch);
+    expect(first.action).toBeUndefined();
+    expect(first.nextState).toEqual({
+      phase: "ASK_NAME",
+      askedFullName: true,
+    });
+    expect(first.reply.toLowerCase()).toContain("first and last");
+
+    const second = await step(
+      { phase: "ASK_NAME", askedFullName: true },
+      "Connor",
+      noMatch
+    );
+    expect(second.action).toBe("transfer");
+    expect(outcomeOf(second.effects)).toBe("no_match_transferred");
+  });
+
+  it("ASK_NAME partial that uniquely matches is admitted without re-ask", async () => {
+    const deps = depsWith(async (name) => {
+      expect(name).toBe("Connor");
+      return { match: guest("Sera Connor"), candidates: [guest("Sera Connor")] };
+    });
+    const r = await step({ phase: "ASK_NAME" }, "Connor", deps);
+    expect(r.action).toBe("hangup");
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
   });
 
   it("general inquiry (package) → transfer to Scott", async () => {
@@ -210,14 +286,11 @@ describe("callflow", () => {
     expect(r3.action).toBe("transfer");
   });
 
-  it("HOLDING: caller speech during the ack hold gets a wait reply, then message fallback", async () => {
-    const first = await step({ phase: "HOLDING" }, "Hello? Are you there?", noMatch);
-    expect(first.reply).toContain("moment");
-    expect(first.nextState).toEqual({ phase: "HOLDING", holds: 1 });
-    expect(first.effects).toHaveLength(0);
-    const third = await step({ phase: "HOLDING", holds: 2 }, "Hello?", noMatch);
-    expect(third.nextState.phase).toBe("TAKE_MESSAGE");
-    expect(third.reply).toContain("message");
+  it("HOLDING (legacy): immediately transfers instead of silent hold", async () => {
+    const r = await step({ phase: "HOLDING" }, "Hello? Are you there?", noMatch);
+    expect(r.action).toBe("transfer");
+    expect(r.transferTarget).toBe("scott");
+    expect(r.reply.toLowerCase()).toContain("connecting");
   });
 
   it("goodbye closes politely with a hangup", async () => {
