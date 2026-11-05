@@ -21,8 +21,7 @@ const AGENT_ID = process.env.AGENTPHONE_AGENT_ID;
 const NUMBER = process.env.AGENTPHONE_NUMBER;
 const SCOTT = process.env.SCOTT_PHONE;
 
-const GREETING =
-  "Hi, this is Scott and Monica's automated concierge assistant. How can I help you?";
+const GREETING = "Hi, Scott and Monica's concierge — how can I help?";
 
 function headers(): Record<string, string> {
   return { Authorization: `Bearer ${API_KEY}`, "Content-Type": "application/json" };
@@ -71,7 +70,12 @@ async function main() {
   }
   const webhookUrl = `${prodUrl}/api/agentphone/webhook`;
 
-  // 1. Configure the agent
+  // 1. Configure the agent.
+  // interruptionSensitivity 0.5 (default 0.8): let the agent finish asking for
+  // the name before the concierge's barge-in is accepted — a live call lost the
+  // first-name fragment ("Sarah") to interruption. enableBackchannel false:
+  // avoid "uh-huh" talk-over on short lobby turns. Do NOT call this script
+  // against prod from a fix PR unless an operator explicitly re-provisions.
   const patch = await api("PATCH", `/agents/${AGENT_ID}`, {
     name: "Angel Concierge",
     description:
@@ -81,6 +85,8 @@ async function main() {
     transferNumber: SCOTT,
     sttMode: "accurate",
     maxSilenceMs: 60000,
+    interruptionSensitivity: 0.5,
+    enableBackchannel: false,
   });
   if (patch.status !== 200) {
     console.error("agent PATCH failed", patch.status, patch.json);
@@ -101,8 +107,8 @@ async function main() {
   }
 
   // 3. Agent-level webhook (create or reuse; secret only returned by the API).
-  // timeout 60s: transfers hold the concierge ~20s waiting for an ack, so the
-  // default 30s delivery timeout is too tight.
+  // timeout 60s: guest lookup + transfer PATCH + NDJSON reply; keep headroom
+  // over the default 30s delivery timeout.
   const WEBHOOK_TIMEOUT = 60;
   const existing = await api("GET", `/agents/${AGENT_ID}/webhook`);
   const ex = existing.json as {

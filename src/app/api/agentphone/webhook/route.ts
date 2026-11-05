@@ -1,12 +1,15 @@
 import { db } from "@/lib/db";
-import { matchGuest } from "@/lib/db/guests";
+import {
+  listActiveGuests,
+  matchGuestAgainst,
+  type GuestNameRow,
+} from "@/lib/db/guests";
 import { verifySignature } from "@/lib/agentphone/signature";
 import { setTransferNumber } from "@/lib/agentphone/client";
 import { notify } from "@/lib/notify";
 import {
   INITIAL_STATE,
   step,
-  targetName,
   transferFailedResult,
   transferNotifyEffect,
   type CallOutcome,
@@ -18,11 +21,14 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// Cold transfers are one-way (declined → caller strands in voicemail), so
-// transfers are ack-gated: hold the concierge, ping Scott & Monica with a
-// priority notification + ack link, transfer only if someone taps it.
-const ACK_WAIT_MS = Number(process.env.ACK_WAIT_MS ?? 20_000);
-const ACK_POLL_MS = 2_000;
+// Cold transfer target. Default SCOTT_PHONE; swap that env later for a number
+// that rings both Scott and Monica if desired. Monica is still selectable when
+// the concierge asks for her by name.
+function phoneFor(target: TransferTarget): string {
+  return target === "monica"
+    ? (process.env.MONICA_PHONE ?? "")
+    : (process.env.SCOTT_PHONE ?? "");
+}
 
 const FALLBACK_TEXT =
   "I'm sorry, I'm having trouble — please hold while I transfer you.";
@@ -108,6 +114,14 @@ async function loadCall(
   return rows[0] as { id: string; state: CallState | null };
 }
 
+/** Load the active guest list once per call and reuse across turns. */
+async function guestsForCall(state: CallState): Promise<GuestNameRow[]> {
+  // undefined = never loaded; [] = loaded, no active guests.
+  if (state.guestSnapshot !== undefined) return state.guestSnapshot;
+  const rows = await listActiveGuests();
+  return rows.map((g) => ({ id: g.id, name: g.name }));
+}
+
 function handleVoiceMessage(payload: WebhookPayload): Response {
   const data = payload.data ?? {};
   const callId = data.callId;
@@ -125,30 +139,41 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         const call = await loadCall(callId, data.from ?? null);
         callDbId = call.id;
         const state = call.state ?? INITIAL_STATE;
-        // Fill dead air on turns that hit the DB / AgentPhone API.
-        if (state.phase !== "GREETING") {
+        const snapshot = await guestsForCall(state);
+        const deps = {
+          matchGuest: async (name: string) => matchGuestAgainst(name, snapshot),
+        };
+
+        // Peek: only fill dead air when a guest lookup is likely.
+        const maybeLookup =
+          state.phase === "ASK_NAME" ||
+          ((state.phase === "GREETING" || state.phase === "INTENT") &&
+            /\b(visitor|guest|here|lobby|name)\b/i.test(utterance));
+        if (maybeLookup) {
           write({ text: "One moment.", interim: true });
         }
-        result = await step(state, utterance, { matchGuest });
+
+        result = await step(state, utterance, deps);
+        // Persist the snapshot on every turn so later turns skip the DB round-trip.
+        result = {
+          ...result,
+          nextState: { ...result.nextState, guestSnapshot: snapshot },
+        };
+
         if (result.action === "transfer") {
-          const isErrorPath = result.effects.some(
-            (e) => e.type === "outcome" && e.outcome === "error"
-          );
-          if (isErrorPath) {
-            // DB is failing — the ack system (also DB) can't work; blind
-            // transfer is the least-bad fail-closed option here.
-            const patched = await setTransferNumber(
-              process.env.SCOTT_PHONE ?? ""
-            );
-            if (patched) {
-              result.effects.push(transferNotifyEffect("scott"));
-              write({ text: result.reply, action: "transfer" });
-            } else {
-              result = transferFailedResult(result);
-              write({ text: result.reply });
-            }
+          const target: TransferTarget = result.transferTarget ?? "scott";
+          const number = phoneFor(target);
+          const patched = number ? await setTransferNumber(number) : false;
+          if (patched) {
+            result.effects.push(transferNotifyEffect(target));
+            write({ text: result.reply, action: "transfer" });
           } else {
-            result = await ackGatedTransfer(write, result, call.id);
+            result = transferFailedResult(result, "patch_failed");
+            result = {
+              ...result,
+              nextState: { ...result.nextState, guestSnapshot: snapshot },
+            };
+            write({ text: result.reply });
           }
         } else {
           const final: Record<string, unknown> = { text: result.reply };
@@ -194,94 +219,6 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
     status: 200,
     headers: { "Content-Type": "application/x-ndjson" },
   });
-}
-
-async function waitForAck(callDbId: string): Promise<TransferTarget | null> {
-  const deadline = Date.now() + ACK_WAIT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, ACK_POLL_MS));
-    try {
-      const rows = await db()`
-        select target from call_acks where call_id = ${callDbId}::uuid`;
-      const target = rows[0]?.target as TransferTarget | undefined;
-      if (target) return target;
-    } catch (e) {
-      console.error("webhook: ack poll failed", e);
-    }
-  }
-  return null;
-}
-
-/**
- * Hold the concierge, notify Scott & Monica with an ack link (priority 1),
- * and poll for a tap. Ack → PATCH transferNumber + transfer. No ack → offer
- * to take a message. Writes all NDJSON chunks; returns the effective result
- * for effect execution.
- */
-async function ackGatedTransfer(
-  write: (obj: Record<string, unknown>) => void,
-  result: CallflowResult,
-  callDbId: string
-): Promise<CallflowResult> {
-  write({ text: result.reply, interim: true });
-
-  // Mark the hold BEFORE polling: anything the caller says during the ~20s
-  // hold arrives as a separate invocation, which must see HOLDING (and say
-  // "one moment") rather than re-run the previous state's deny/transfer.
-  try {
-    await db()`update calls set state = '{"phase":"HOLDING"}'::jsonb
-               where id = ${callDbId}`;
-  } catch (e) {
-    console.error("webhook: failed to mark HOLDING state", e);
-  }
-
-  const denied = result.effects.find(
-    (e) => e.type === "notify" && e.event === "guest.denied"
-  );
-  const context =
-    denied && denied.type === "notify"
-      ? denied.message.replace(/ — transferring$/, "")
-      : "Front desk has a question";
-  const preferred = targetName(result.transferTarget ?? "scott");
-  await notify({
-    event: "transfer.request",
-    message: `${context}. Concierge is holding (asked for ${preferred}) — tap to take the call.`,
-    url: `${process.env.APP_URL ?? ""}/ack/${callDbId}`,
-    urlTitle: "Take the call",
-  });
-
-  // keep the line alive mid-hold
-  const heartbeat = setTimeout(() => {
-    try {
-      write({ text: "Thanks for holding — one moment.", interim: true });
-    } catch {
-      // stream already closed
-    }
-  }, Math.min(ACK_WAIT_MS - 2_000, 12_000));
-
-  const acked = await waitForAck(callDbId);
-  clearTimeout(heartbeat);
-
-  if (acked) {
-    const number =
-      acked === "monica" ? process.env.MONICA_PHONE : process.env.SCOTT_PHONE;
-    const patched = number ? await setTransferNumber(number) : false;
-    if (patched) {
-      write({ text: "Connecting you now.", action: "transfer" });
-      return {
-        ...result,
-        reply: `${result.reply} Connecting you now.`,
-        effects: [...result.effects, transferNotifyEffect(acked)],
-      };
-    }
-    const failed = transferFailedResult(result, "patch_failed");
-    write({ text: failed.reply });
-    return { ...failed, reply: `${result.reply} ${failed.reply}` };
-  }
-
-  const noAck = transferFailedResult(result, "no_ack");
-  write({ text: noAck.reply });
-  return { ...noAck, reply: `${result.reply} ${noAck.reply}` };
 }
 
 async function runEffects(

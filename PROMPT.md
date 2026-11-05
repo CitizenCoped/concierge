@@ -236,8 +236,7 @@ unit-testable. Persist per-call state keyed by `callId` (DB table or the
 States & behavior:
 
 1. **GREETING** (first `agent.message` of a call): fire `call.started` notify.
-   Say: "Hi, this is Scott and Monica's automated concierge assistant. How can
-   I help you?"
+   Say: "Hi, Scott and Monica's concierge — how can I help?"
    *(Implementation note: the greeting is spoken by the agent-level
    `beginMessage` at pickup. If the caller's first webhook utterance already
    has content, the state machine answers it directly without re-greeting;
@@ -253,29 +252,27 @@ States & behavior:
    auto-extracted from an announcement is best-effort: on a match it admits,
    but on a miss it re-asks for the name explicitly (ASK_NAME) rather than
    denying — a deny can only follow a name the concierge stated explicitly.)*
-3. **ASK_NAME → MATCH**: run the guest query (Phase 2). 
+3. **ASK_NAME → MATCH**: run the guest matcher (active list loaded once per
+   call; phonetic Soundex + Levenshtein, admit only on exactly one candidate).
    - Exactly one active match → say "Yes — {name} is expected. It's okay to
      send them up. Thank you!"; fire `guest.admitted`; mark outcome
      `guest_admitted`; `hangup: true` after confirmation.
-   - No/ambiguous match → say "I don't see them on the approved list. Please
-     hold for just a moment while I check with Scott or Monica."; fire
-     `guest.denied`; → TRANSFER.
-4. **TRANSFER**: 
+   - Partial/single-token miss → re-ask once for first and last name before
+     denying.
+   - No/ambiguous match after that → say "I don't see them on the approved
+     list. Connecting you to Scott or Monica now."; fire `guest.denied`; →
+     TRANSFER.
+4. **TRANSFER**:
    - Choose target: Scott first (`SCOTT_PHONE`); allow "is Monica available?"
-     style requests to select Monica (`MONICA_PHONE`).
+     style requests to select Monica (`MONICA_PHONE`). `SCOTT_PHONE` is the
+     easy dial to change later (e.g. a number that rings both phones).
    - `PATCH /v1/agents/{AGENTPHONE_AGENT_ID}` setting `transferNumber` to the
-     chosen target, **await success**, then respond
-     `{"text": "Connecting you now.", "action": "transfer"}`.
-   - Fire `call.transfer` notify (so Scott/Monica's phones buzz *before* the
-     transfer lands — this is their heads-up that the front desk is calling).
-   - ⚠️ **Known platform constraint (verify in Phase 8):** AgentPhone documents
-     only cold transfer with agent-level `transferNumber`, and no no-answer
-     callback. If testing shows a failed/unanswered transfer does NOT return
-     to the agent, implement the fallback: do not transfer blind — instead
-     keep the concierge on hold ("one moment"), send a priority-1 Pushover,
-     wait ~20s for an acknowledgment via a `/api/ack` link in the
-     notification; if none, go to TAKE_MESSAGE. Choose whichever behavior
-     tests prove reliable, document the choice in CLAUDE.md.
+     chosen target, **await success**, then respond with the spoken reply +
+     `{"action": "transfer"}` immediately — no ack-hold, no silent wait.
+   - Fire `call.transfer` notify (Pushover + Web Push) as the heads-up that
+     the front desk is being connected.
+   - If the PATCH fails → TAKE_MESSAGE. (AgentPhone cold transfer is one-way;
+     a declined transfer can still land in personal voicemail — accepted.)
 5. **TAKE_MESSAGE**: "I wasn't able to reach them. I can take a message —
    go ahead." Capture the utterance(s), confirm back, store in `messages`,
    fire `message.taken`, outcome `message_taken`, then thank + hangup.

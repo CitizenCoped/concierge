@@ -43,41 +43,39 @@ export default async function AckPage({
         <>
           <div className="text-5xl">📲</div>
           <h1 className="text-xl font-bold">
-            Transferring to {call.acked === "monica" ? "Monica" : "Scott"}
+            Noted — {call.acked === "monica" ? "Monica" : "Scott"}
           </h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
-            Your phone will ring in a moment. If the call already moved on to
-            message-taking, you can call the front desk back.
+            Transfers now ring automatically. If the call already moved on,
+            you can call the front desk back.
           </p>
         </>
       ) : (
         <>
           <div className="text-5xl">📞</div>
-          <h1 className="text-xl font-bold">Front desk is holding</h1>
+          <h1 className="text-xl font-bold">Front desk call</h1>
           <p className="text-sm text-neutral-500 dark:text-neutral-400">
             Call started {call.started_at ? fmtLocal(call.started_at) : "just now"}
-            {call.from_number ? ` from ${call.from_number}` : ""}. Take it now
-            and the concierge AI will transfer the call to your phone.
+            {call.from_number ? ` from ${call.from_number}` : ""}. Transfers now
+            go straight to Scott&apos;s phone — this page is only kept for older
+            notification links.
           </p>
           <div className="flex w-full max-w-xs flex-col gap-3">
             <form action={ackCall}>
               <input type="hidden" name="id" value={call.id} />
               <input type="hidden" name="target" value="scott" />
               <button className="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white">
-                📲 Ring Scott&apos;s phone
+                📲 Mark Scott
               </button>
             </form>
             <form action={ackCall}>
               <input type="hidden" name="id" value={call.id} />
               <input type="hidden" name="target" value="monica" />
               <button className="w-full rounded-xl bg-purple-600 px-4 py-3 font-semibold text-white">
-                📲 Ring Monica&apos;s phone
+                📲 Mark Monica
               </button>
             </form>
           </div>
-          <p className="text-xs text-neutral-400 dark:text-neutral-500">
-            If nobody taps within ~20 seconds, the AI offers to take a message.
-          </p>
         </>
       )}
     </main>

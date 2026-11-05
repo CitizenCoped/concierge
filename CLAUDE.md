@@ -47,15 +47,13 @@ Front desk phone ──▶ AgentPhone number ──▶ AgentPhone voice engine
 - **Transfer is cold and agent-level**: the `transferNumber` field lives on the
   agent object. To choose Scott vs Monica per call, `PATCH /v1/agents/{id}`
   with the target number immediately before returning `action: "transfer"`.
-  **Live-tested (Aug 2026): cold transfer is one-way.** A declined transfer
-  strands the caller in the target's personal voicemail; the AI never regains
-  the call. Therefore transfers are **ack-gated**: the AI holds the concierge
-  (~20s, `ACK_WAIT_MS`), fires a priority-1 `transfer.request` notification
-  with a link to `/ack/{callDbId}`, and polls `call_acks`. Tapping the link
-  picks the target phone and triggers the real transfer; no tap ⇒ the AI takes
-  a message. The only blind transfer left is the DB-error fail-closed path
-  (the ack system needs the DB). The agent webhook is provisioned with
-  `timeout: 60` to cover the hold.
+  **Owner choice (Nov 2026): transfer immediately** to `SCOTT_PHONE` (or
+  Monica when asked for by name) — no 20s silent ack-hold. Still fire
+  `guest.denied` / `call.transfer` Pushover + Web Push as the heads-up.
+  `SCOTT_PHONE` can later be swapped for a number that rings both phones.
+  *(Earlier ack-gated hold from Aug 2026 live testing is retired; `/ack/{id}`
+  remains but is no longer linked from notifications.)* The agent webhook
+  stays at `timeout: 60` for lookup + PATCH headroom.
 - **Neon** is the single source of truth: guest list, call records, transcript
   turns, messages taken, push subscriptions.
 - **Pushover** is fired server-side at every interaction point (call started,
@@ -70,13 +68,14 @@ Front desk phone ──▶ AgentPhone number ──▶ AgentPhone voice engine
   Plain SQL in `src/lib/db/` with a tiny query helper; migrations are numbered
   `.sql` files in `migrations/` applied by `scripts/migrate.ts`. No ORM.
 - All times stored **UTC** in Postgres (`timestamptz`); guest windows entered
-  in `America/Los_Angeles` and converted at the edge. Guest-window matching
-  happens in SQL, never in JS.
+  in `America/Los_Angeles` and converted at the edge. Active-window filtering
+  happens in SQL (`listActiveGuests`); phonetic/fuzzy name matching runs in
+  JS against a per-call guest snapshot (`matchGuestAgainst`).
 - Webhook handlers verify `X-Webhook-Signature` (HMAC-SHA256 over
   `{timestamp}.{raw_body}`, reject >5 min skew) and dedupe on `X-Webhook-ID`
   before any side effect. Read the **raw body** before JSON parsing.
-- Voice webhook responses stream NDJSON with an `interim` chunk first so the
-  concierge never hears dead air.
+- Voice webhook responses stream NDJSON; an interim `"One moment."` is sent
+  only when a guest lookup is likely — not on every turn.
 - Notifications go through one module, `src/lib/notify.ts` — every event calls
   `notify(event)` which fans out to Pushover + Web Push + DB log. Never call
   Pushover directly from route handlers.
@@ -118,8 +117,11 @@ or delete the file; GitHub Pages settings stay as they are.
 
 ### Deviations from PROMPT.md (all verified by live calls)
 
-1. **Transfer fallback = ack-gated hold** (see Architecture above) — chosen
-   after live testing proved declined cold transfers dead-end in voicemail.
+1. **Transfer = immediate cold transfer** to `SCOTT_PHONE` (see Architecture).
+   The Aug 2026 ack-gated hold was retired after a Nov 2026 live miss: the
+   hold left the concierge in silence and nobody's phone rang. Owner chose
+   ring-immediately + notify over tap-to-take. Declined transfers can still
+   land in personal voicemail (AgentPhone cold-transfer limit).
 2. **Per-call state lives in `calls.state` (jsonb)**, not `conversationState`:
    AgentPhone documents no way to set conversationState from webhook responses.
 3. **Add-guest default start rounds DOWN to the last 15 min** (PROMPT said
@@ -127,10 +129,13 @@ or delete the file; GitHub Pages settings stay as they are.
    15 minutes and caused a real denial during acceptance testing.
 4. **Name handling hardened:** a name auto-extracted from an announcement can
    admit but never deny — on a miss the AI re-asks for the name explicitly;
-   denials only follow an explicitly stated name. STT fragments ("I have a ")
-   get up to two clarification re-asks, then fail safe to a transfer.
-5. **Event catalog additions:** `transfer.request` ("📞 Front Desk Holding —
-   Tap to Take the Call", priority 1) and `system.test` ("🔔 Test
+   denials only follow an explicitly stated name. Partial/single-token replies
+   in ASK_NAME re-ask once for first+last before denying. STT fragments
+   ("I have a ") get up to two clarification re-asks, then fail safe to a
+   transfer. Matching is phonetic+fuzzy (Soundex + Levenshtein) and admits
+   only on exactly one active candidate.
+5. **Event catalog additions:** `transfer.request` (legacy ack-hold title;
+   no longer emitted on the hot path) and `system.test` ("🔔 Test
    Notification"). Original catalog titles unchanged.
 6. **TODO:** `PUSHOVER_USER_KEY` is Scott's individual key. For Monica's phone
    to get Pushover notifications, create a delivery group (pushover.net) with
@@ -157,7 +162,6 @@ SCOTT_PHONE               +16198766618
 MONICA_PHONE              +18589452875
 TZ_HOME                   America/Los_Angeles (optional, default this)
 APP_URL                   prod origin, used for notification deep links
-ACK_WAIT_MS               transfer ack hold in ms (optional, default 20000)
 ```
 
 Secrets live in `.env.local` (gitignored) and Vercel project env. **Never

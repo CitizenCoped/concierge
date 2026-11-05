@@ -31,8 +31,12 @@ export interface CallState {
   messageParts?: string[];
   /** number of clarification re-asks already used (loop guard) */
   clarifies?: number;
-  /** caller utterances answered while the transfer-ack hold is running */
+  /** true after we already asked once for first + last name */
+  askedFullName?: boolean;
+  /** caller utterances answered while a legacy transfer-ack hold was running */
   holds?: number;
+  /** active guest {id,name} snapshot loaded once per call (route-managed) */
+  guestSnapshot?: Array<{ id: string; name: string }>;
 }
 
 export const INITIAL_STATE: CallState = { phase: "GREETING" };
@@ -52,10 +56,12 @@ export interface CallflowResult {
   action?: "transfer" | "hangup";
   transferTarget?: TransferTarget;
   effects: Effect[];
+  /** Route may stream a short interim filler before the final reply. */
+  lookupPending?: boolean;
 }
 
 export const GREETING_TEXT =
-  "Hi, this is Scott and Monica's automated concierge assistant. How can I help you?";
+  "Hi, Scott and Monica's concierge — how can I help?";
 
 const GREETING_ONLY_RE =
   /^\s*(hi|hello|hey|hi there|good (morning|afternoon|evening))?[.!,?\s]*$/i;
@@ -69,18 +75,22 @@ const PACKAGE_RE =
 const VISITOR_RE =
   /\b(visitor|guest|here to see|here for|is here|coming up|send (him|her|them) up|has arrived|arrived|lobby|front desk|downstairs|to visit|stopping by|wants? to (come|go) up|let (him|her|them) (up|in))\b|\bha(?:ve|s)\b.*\bhere\b/i;
 
-const NAME = "[A-Za-z][A-Za-z .'’-]*?";
+// Name tokens only — no periods/location words — so
+// "Sarah Connor. Is she allowed…" and "John Smith here in the lobby" stay clean.
+const NAME_PART =
+  "(?!here|there|waiting|downstairs|lobby|named|called)[A-Za-z][A-Za-z'’-]*";
+const NAME = `${NAME_PART}(?:\\s+${NAME_PART}){0,3}`;
 const NAME_PATTERNS: RegExp[] = [
   new RegExp(
     `(?:i have|i've got|we have|there is|there's)\\s+(?:an?\\s+)?(?:visitor|guest)?\\s*(?:named|called|name is)?\\s*(${NAME})\\s+(?:here|in the lobby|at the front desk|downstairs|for you|to see|waiting)`,
     "i"
   ),
   new RegExp(
-    `(?:visitor|guest)\\s+(?:named|called|name is|is)\\s+(?:an?\\s+|the\\s+)?(${NAME})[.!?]?$`,
+    `(?:visitor|guest)\\s+(?:named|called|name is|is)\\s+(?:an?\\s+|the\\s+)?(${NAME})\\b`,
     "i"
   ),
   new RegExp(
-    `(?:it is|it's|this is|named|called|name is)\\s+(?:an?\\s+|the\\s+)?(${NAME})[.!?]?$`,
+    `(?:it is|it's|this is|named|called|name is)\\s+(?:an?\\s+|the\\s+)?(${NAME})\\b`,
     "i"
   ),
   new RegExp(
@@ -88,6 +98,9 @@ const NAME_PATTERNS: RegExp[] = [
     "i"
   ),
 ];
+
+const TRAILING_CLAUSE_RE =
+  /\s*[,.]?\s*(?:is|are|was|were|can|could|should|will|would|do|does|did|may|allowed|ok|okay|please|thanks|thank you)\b.*$/i;
 
 // Words that can never be a visitor's name (STT phrasing debris — a real call
 // once captured "here" as the name and wrongly denied the guest).
@@ -105,16 +118,8 @@ function plausibleName(candidate: string | undefined): string | null {
   return c;
 }
 
-function extractName(utterance: string): string | null {
-  const u = utterance.trim().replace(/[.!?]+$/, "");
-  for (const re of NAME_PATTERNS) {
-    const name = plausibleName(u.match(re)?.[1]);
-    if (name) return name;
-  }
-  return null;
-}
-
-function cleanSpokenName(utterance: string): string {
+/** Strip lead-ins and trailing questions so only the person-name remains. */
+export function cleanSpokenName(utterance: string): string {
   return utterance
     .trim()
     .replace(/^((yes|yeah|yep|okay|ok|um|uh|so|well)[,.!\s]+)+/i, "")
@@ -122,8 +127,33 @@ function cleanSpokenName(utterance: string): string {
     .replace(/^(the\s+)?name\s+is\s+/i, "")
     .replace(/^(it\s+is|it's|its|this\s+is|that\s+would\s+be)\s+/i, "")
     .replace(/^(an?|the)\s+/i, "")
-    .replace(/[.!?,]+$/g, "")
+    .replace(TRAILING_CLAUSE_RE, "")
+    .replace(/[.!?,;:]+$/g, "")
     .trim();
+}
+
+export function extractName(utterance: string): string | null {
+  // Prefer later sentences — "… Her name is Sarah Connor. Is she allowed…"
+  const sentences = utterance
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const order =
+    sentences.length > 1 ? [...sentences].reverse() : [utterance.trim()];
+  for (const sentence of order) {
+    const u = sentence.replace(/[.!?]+$/g, "").trim();
+    for (const re of NAME_PATTERNS) {
+      const name = plausibleName(cleanSpokenName(u.match(re)?.[1] ?? ""));
+      if (name) return name;
+    }
+  }
+  return null;
+}
+
+/** Single-token or otherwise incomplete name → re-ask for first + last. */
+export function isPartialName(name: string): boolean {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return parts.length < 2;
 }
 
 /** STT sometimes delivers dangling fragments ("I have a ") as whole turns —
@@ -142,15 +172,14 @@ export function targetName(target: TransferTarget): string {
   return target === "monica" ? "Monica" : "Scott";
 }
 
-/** The route fires this only when a transfer actually executes (after an ack
- *  or on the blind fail-closed path) — never before. */
+/** The route fires this only when a transfer actually executes. */
 export function transferNotifyEffect(target: TransferTarget): Effect {
   const n = targetName(target);
   return {
     type: "notify",
     event: "call.transfer",
     title: `📲 Transferring to ${n}`,
-    message: `Concierge holding; transferring to ${n}`,
+    message: `Concierge transferring to ${n}`,
   };
 }
 
@@ -165,7 +194,7 @@ function politeClose(withOutcome: boolean): CallflowResult {
 
 function generalTransfer(target: TransferTarget): CallflowResult {
   return {
-    reply: "Of course — please hold for just a moment while I connect you.",
+    reply: `Of course — connecting you to ${targetName(target)} now.`,
     nextState: { phase: "DONE" },
     action: "transfer",
     transferTarget: target,
@@ -176,19 +205,25 @@ function generalTransfer(target: TransferTarget): CallflowResult {
 async function matchAndRespond(
   name: string,
   deps: CallflowDeps,
-  opts: { denyOnMiss: boolean } = { denyOnMiss: true }
+  opts: {
+    denyOnMiss: boolean;
+    /** Re-ask once for first+last when the heard name is partial/unclear. */
+    allowPartialReask?: boolean;
+    state?: CallState;
+  } = { denyOnMiss: true }
 ): Promise<CallflowResult> {
   let result: GuestMatch;
   try {
     result = await deps.matchGuest(name);
   } catch (e) {
-    // Fail closed: never admit on a lookup error — hold and transfer.
+    // Fail closed: never admit on a lookup error — transfer immediately.
     return {
       reply:
-        "I'm having a little trouble checking the list. Please hold for just a moment while I check with Scott or Monica.",
+        "I'm having a little trouble checking the list. Connecting you to Scott now.",
       nextState: { phase: "DONE" },
       action: "transfer",
       transferTarget: "scott",
+      lookupPending: true,
       effects: [
         {
           type: "notify",
@@ -204,6 +239,7 @@ async function matchAndRespond(
       reply: `Yes — ${result.match.name} is expected. It's okay to send them up. Thank you!`,
       nextState: { phase: "DONE" },
       action: "hangup",
+      lookupPending: true,
       effects: [
         {
           type: "notify",
@@ -220,15 +256,30 @@ async function matchAndRespond(
     return {
       reply: "I may have misheard — what's the visitor's name, exactly?",
       nextState: { phase: "ASK_NAME" },
+      lookupPending: true,
+      effects: [],
+    };
+  }
+  // Partial / single-token miss: ask once for first and last before denying.
+  if (opts.allowPartialReask && isPartialName(name)) {
+    return {
+      reply: "Could I get the guest's first and last name?",
+      nextState: {
+        phase: "ASK_NAME",
+        askedFullName: true,
+        clarifies: opts.state?.clarifies,
+      },
+      lookupPending: true,
       effects: [],
     };
   }
   return {
     reply:
-      "I don't see them on the approved list. Please hold for just a moment while I check with Scott or Monica.",
+      "I don't see them on the approved list. Connecting you to Scott or Monica now.",
     nextState: { phase: "DONE" },
     action: "transfer",
     transferTarget: "scott",
+    lookupPending: true,
     effects: [
       {
         type: "notify",
@@ -323,34 +374,26 @@ export async function step(
         const clarifies = state.clarifies ?? 0;
         if (clarifies < 2) {
           return {
-            reply: "Sorry — what was the visitor's name?",
+            reply: state.askedFullName
+              ? "Sorry — could I get the first and last name?"
+              : "Sorry — what was the visitor's name?",
             nextState: { ...state, clarifies: clarifies + 1 },
             effects: [],
           };
         }
         return generalTransfer("scott");
       }
-      return matchAndRespond(name, deps);
+      return matchAndRespond(name, deps, {
+        denyOnMiss: true,
+        allowPartialReask: !state.askedFullName,
+        state,
+      });
     }
 
     case "HOLDING": {
-      // The transfer-ack hold is still streaming in another invocation; keep
-      // the caller company without touching the flow. If we're stuck here
-      // (hold crashed, or the caller keeps talking), fall back to a message.
-      const holds = state.holds ?? 0;
-      if (holds >= 2) {
-        return {
-          reply:
-            "I'm sorry for the wait — I wasn't able to reach Scott or Monica. I can take a message; go ahead whenever you're ready.",
-          nextState: { phase: "TAKE_MESSAGE", messageParts: [] },
-          effects: [],
-        };
-      }
-      return {
-        reply: "One moment, please — still checking.",
-        nextState: { ...state, holds: holds + 1 },
-        effects: [],
-      };
+      // Legacy ack-hold phase — transfers are immediate now. Connect right away
+      // instead of leaving the caller in silence.
+      return generalTransfer("scott");
     }
 
     case "TAKE_MESSAGE": {
@@ -409,9 +452,8 @@ export async function step(
   }
 }
 
-/** Applied by the route when a transfer can't complete (no ack within the
- *  wait window, or the PATCH failed): never transfer blind — apologize and
- *  fall back to message taking. */
+/** Applied by the route when a transfer can't complete (PATCH failed):
+ *  apologize and fall back to message taking. */
 export function transferFailedResult(
   prev: CallflowResult,
   reason: "no_ack" | "patch_failed" = "patch_failed"
