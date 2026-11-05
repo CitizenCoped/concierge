@@ -61,7 +61,7 @@ export interface CallflowResult {
 }
 
 export const GREETING_TEXT =
-  "Hi, Scott and Monica's concierge — how can I help?";
+  "Hello, Scott and Monica's AI assistant here. What's up?";
 
 const GREETING_ONLY_RE =
   /^\s*(hi|hello|hey|hi there|good (morning|afternoon|evening))?[.!,?\s]*$/i;
@@ -357,7 +357,7 @@ export async function step(
       }
       if (GREETING_ONLY_RE.test(utterance)) {
         return {
-          reply: "How can I help you?",
+          reply: "What's up?",
           nextState: state,
           effects: [],
         };

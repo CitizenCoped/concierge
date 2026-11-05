@@ -57,9 +57,16 @@ describe("name extraction", () => {
 describe("callflow", () => {
   it("greets and fires call.started on the first turn", async () => {
     const r = await step(INITIAL_STATE, "", noMatch);
-    expect(r.reply).toMatch(/concierge/i);
-    expect(r.reply.length).toBeLessThan(80);
+    expect(r.reply).toBe(
+      "Hello, Scott and Monica's AI assistant here. What's up?"
+    );
     expect(notifyEvents(r.effects)).toContain("call.started");
+    expect(r.nextState.phase).toBe("INTENT");
+  });
+
+  it("repeat hello on INTENT gets a short What's up?", async () => {
+    const r = await step({ phase: "INTENT" }, "Hello?", noMatch);
+    expect(r.reply).toBe("What's up?");
     expect(r.nextState.phase).toBe("INTENT");
   });
 
