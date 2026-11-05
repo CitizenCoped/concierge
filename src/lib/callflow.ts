@@ -123,7 +123,7 @@ const TRAILING_CLAUSE_RE =
 // Words that can never be a visitor's name (STT phrasing debris — a real call
 // once captured "here" as the name and wrongly denied the guest).
 const NON_NAME_RE =
-  /^(a|an|the|for|to|is|it|someone|somebody|here|there|them|him|her|you|visitor|guest|waiting|lobby)$/i;
+  /^(a|an|the|for|to|is|it|someone|somebody|here|there|them|him|her|he|she|they|you|visitor|guest|waiting|lobby)$/i;
 
 function plausibleName(candidate: string | undefined): string | null {
   const c = candidate?.trim().replace(/^(an?|the)\s+/i, "");
@@ -200,8 +200,8 @@ export function extractQuestionGuestName(utterance: string): string | null {
 export function looksLikeGuestPermissionQuestion(utterance: string): boolean {
   const u = utterance.trim();
   if (!u) return false;
-  // Visitor arrivals stay on the admit path even if they end with "come up?"
-  if (VISITOR_RE.test(u) && !PACKAGE_RE.test(u)) return false;
+  // Visitor arrivals stay on the admit path (even with parking / come-up words).
+  if (VISITOR_RE.test(u)) return false;
   return QUESTION_SHAPE_RE.test(u) || PERMISSION_TOPIC_RE.test(u);
 }
 
@@ -419,10 +419,14 @@ async function handleIntent(
     // Repeatedly unintelligible — fail safe to a transfer, never guess.
     return generalTransfer("scott");
   }
-  const isVisitor = VISITOR_RE.test(utterance) && !PACKAGE_RE.test(utterance);
+  // Arrival announcements take priority over package/parking words and Guest
+  // Info Q&A — "Jane is here, can she park?" must still admit, not answer notes.
+  const visitorCue = VISITOR_RE.test(utterance);
+  const extractedVisitorName = visitorCue ? extractName(utterance) : null;
+  const isVisitor =
+    visitorCue && (!PACKAGE_RE.test(utterance) || !!extractedVisitorName);
   if (isVisitor) {
-    const name = extractName(utterance);
-    if (!name) {
+    if (!extractedVisitorName) {
       return {
         reply: "Of course — what's the visitor's name?",
         nextState: { phase: "ASK_NAME" },
@@ -431,7 +435,7 @@ async function handleIntent(
     }
     // Auto-extracted name: admit on a match, but never deny on a miss —
     // re-ask for the name explicitly instead (denyOnMiss: false).
-    return matchAndRespond(name, deps, { denyOnMiss: false });
+    return matchAndRespond(extractedVisitorName, deps, { denyOnMiss: false });
   }
 
   // Named-guest permission Q&A from Guest Info, before cold-transfer fallback.
