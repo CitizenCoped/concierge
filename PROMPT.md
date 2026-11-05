@@ -184,6 +184,7 @@ Event catalog (titles are the Pushover titles — keep these exact strings):
 | call.started        | 📞 Front Desk Call             | "Front desk is calling the concierge line…"       |
 | guest.admitted      | ✅ Guest Admitted              | "Guest = {name} has been let into the building"   |
 | guest.denied        | ⛔ No Guest Match              | "'{spoken name}' not on list — transferring"      |
+| guest.info_answered | ℹ️ Guest Info Answered         | "{name}: Q=\"…\" → yes|no. {reply}"               |
 | call.transfer       | 📲 Transferring to {target}    | "Concierge holding; transferring to {target}"     |
 | message.taken       | 📝 Message From Concierge      | "Message From Concierge = {body}"                 |
 | call.ended          | ☎️ Call Ended                  | "{outcome summary}"                               |
@@ -244,6 +245,12 @@ States & behavior:
    utterance.)*
 2. **INTENT**: classify the concierge's utterance:
    - visitor announcement → ASK_NAME (or extract name directly if spoken)
+   - permission / access question naming an **active** guest with non-empty
+     `guest_info` → narrow LLM step answers strictly from those notes
+     (`yes`/`no`/`unclear` + short spoken reply). Fire `guest.info_answered`.
+     On `unclear`, empty notes, inactive/unknown guest, or LLM timeout/error
+     (~2.5s) → fall through to TRANSFER. Never invent permissions; never
+     answer for someone not on the active list.
    - anything else (package, maintenance, question for Scott/Monica) →
      TRANSFER
    *(Implementation notes from live testing: STT sometimes delivers dangling
@@ -251,7 +258,8 @@ States & behavior:
    clarification up to twice before failing safe to TRANSFER. A name
    auto-extracted from an announcement is best-effort: on a match it admits,
    but on a miss it re-asks for the name explicitly (ASK_NAME) rather than
-   denying — a deny can only follow a name the concierge stated explicitly.)*
+   denying — a deny can only follow a name the concierge stated explicitly.
+   Visitor-arrival flow is unchanged and takes priority over Guest Info Q&A.)*
 3. **ASK_NAME → MATCH**: run the guest matcher (active list loaded once per
    call; phonetic Soundex + Levenshtein, admit only on exactly one candidate).
    - Exactly one active match → say "Yes — {name} is expected. It's okay to

@@ -6,6 +6,7 @@ export type NotifyEvent =
   | "call.started"
   | "guest.admitted"
   | "guest.denied"
+  | "guest.info_answered"
   | "call.transfer"
   | "message.taken"
   | "call.ended"
@@ -19,6 +20,7 @@ export const EVENT_TITLES: Record<NotifyEvent, string> = {
   "call.started": "📞 Front Desk Call",
   "guest.admitted": "✅ Guest Admitted",
   "guest.denied": "⛔ No Guest Match",
+  "guest.info_answered": "ℹ️ Guest Info Answered",
   "call.transfer": "📲 Transferring",
   "message.taken": "📝 Message From Concierge",
   "call.ended": "☎️ Call Ended",

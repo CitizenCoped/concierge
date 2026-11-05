@@ -3,18 +3,21 @@ import {
   INITIAL_STATE,
   cleanSpokenName,
   extractName,
+  extractQuestionGuestName,
   isPartialName,
+  looksLikeGuestPermissionQuestion,
   step,
   transferFailedResult,
   type CallflowDeps,
   type Effect,
+  type GuestInfoQaResult,
 } from "./callflow";
 import type { Guest } from "./db/guests";
 
-const guest = (name: string): Guest => ({
+const guest = (name: string, guest_info: string | null = null): Guest => ({
   id: "00000000-0000-0000-0000-000000000001",
   name,
-  guest_info: null,
+  guest_info,
   guest_phone: null,
   starts_at: "",
   ends_at: "",
@@ -23,8 +26,12 @@ const guest = (name: string): Guest => ({
   archived: false,
 });
 
-const depsWith = (impl: CallflowDeps["matchGuest"]): CallflowDeps => ({
+const depsWith = (
+  impl: CallflowDeps["matchGuest"],
+  answerGuestInfo?: CallflowDeps["answerGuestInfo"]
+): CallflowDeps => ({
   matchGuest: impl,
+  ...(answerGuestInfo ? { answerGuestInfo } : {}),
 });
 
 const noMatch = depsWith(async () => ({ match: null, candidates: [] }));
@@ -51,6 +58,123 @@ describe("name extraction", () => {
     expect(cleanSpokenName("John Smith. Can he come up?")).toBe("John Smith");
     expect(isPartialName("Connor")).toBe(true);
     expect(isPartialName("Sarah Connor")).toBe(false);
+  });
+
+  it("extracts a guest name from a garage permission question", () => {
+    expect(
+      extractQuestionGuestName("Is Jane allowed to park in the garage?")
+    ).toBe("Jane");
+    expect(
+      looksLikeGuestPermissionQuestion("Is Jane allowed to park in the garage?")
+    ).toBe(true);
+  });
+});
+
+describe("guest_info permission Q&A", () => {
+  const janeNotes =
+    "House keeper for scott and Monica. Jane is allowed access to our condo unit and access to the secured parking underground.";
+  const jane = guest("Jane McDaniel", janeNotes);
+
+  it("garage question for active Jane → yes answer from notes", async () => {
+    const deps = depsWith(
+      async (name) => {
+        expect(name).toBe("Jane");
+        return { match: jane, candidates: [jane] };
+      },
+      async () =>
+        ({
+          answer: "yes",
+          reply:
+            "Yes, Jane McDaniel has access to the secured underground parking.",
+        }) satisfies GuestInfoQaResult
+    );
+    const r = await step(
+      { phase: "INTENT" },
+      "Is Jane allowed to park in the garage?",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(r.reply).toContain("Jane McDaniel");
+    expect(r.reply.toLowerCase()).toMatch(/parking|garage|underground/);
+    expect(notifyEvents(r.effects)).toContain("guest.info_answered");
+    expect(r.nextState.phase).toBe("INTENT");
+  });
+
+  it("question not covered by the notes → transfer", async () => {
+    const deps = depsWith(
+      async () => ({ match: jane, candidates: [jane] }),
+      async () => ({ answer: "unclear", reply: "I need to check with Scott." })
+    );
+    const r = await step(
+      { phase: "INTENT" },
+      "Is Jane allowed to use the rooftop pool?",
+      deps
+    );
+    expect(r.action).toBe("transfer");
+    expect(r.transferTarget).toBe("scott");
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+  });
+
+  it("inactive / unknown guest → no answer from notes, transfer", async () => {
+    let answered = false;
+    const deps = depsWith(
+      async () => ({ match: null, candidates: [] }),
+      async () => {
+        answered = true;
+        return { answer: "yes", reply: "should not run" };
+      }
+    );
+    const r = await step(
+      { phase: "INTENT" },
+      "Is Jane allowed to park in the garage?",
+      deps
+    );
+    expect(answered).toBe(false);
+    expect(r.action).toBe("transfer");
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+  });
+
+  it("empty guest_info → transfer without calling the LLM", async () => {
+    const bare = guest("Jane McDaniel", null);
+    let answered = false;
+    const deps = depsWith(
+      async () => ({ match: bare, candidates: [bare] }),
+      async () => {
+        answered = true;
+        return { answer: "yes", reply: "should not run" };
+      }
+    );
+    const r = await step(
+      { phase: "INTENT" },
+      "Is Jane allowed to park in the garage?",
+      deps
+    );
+    expect(answered).toBe(false);
+    expect(r.action).toBe("transfer");
+  });
+
+  it("visitor arrival flow is unchanged even with a trailing come-up question", async () => {
+    let qaCalls = 0;
+    const deps = depsWith(
+      async (name) => {
+        expect(name).toBe("Jane McDaniel");
+        return { match: jane, candidates: [jane] };
+      },
+      async () => {
+        qaCalls += 1;
+        return { answer: "yes", reply: "should not run for visitor admit" };
+      }
+    );
+    const r = await step(
+      { phase: "INTENT" },
+      "Jane McDaniel is here to see Scott",
+      deps
+    );
+    expect(qaCalls).toBe(0);
+    expect(r.action).toBe("hangup");
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
+    expect(notifyEvents(r.effects)).toContain("guest.admitted");
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
   });
 });
 

@@ -35,8 +35,8 @@ export interface CallState {
   askedFullName?: boolean;
   /** caller utterances answered while a legacy transfer-ack hold was running */
   holds?: number;
-  /** active guest {id,name} snapshot loaded once per call (route-managed) */
-  guestSnapshot?: Array<{ id: string; name: string }>;
+  /** active guest snapshot loaded once per call (route-managed) */
+  guestSnapshot?: Array<{ id: string; name: string; guest_info?: string | null }>;
 }
 
 export const INITIAL_STATE: CallState = { phase: "GREETING" };
@@ -46,8 +46,21 @@ export type Effect =
   | { type: "outcome"; outcome: CallOutcome; guestId?: string }
   | { type: "saveMessage"; body: string };
 
+export interface GuestInfoQaInput {
+  guestName: string;
+  guestInfo: string;
+  question: string;
+}
+
+export interface GuestInfoQaResult {
+  answer: "yes" | "no" | "unclear";
+  reply: string;
+}
+
 export interface CallflowDeps {
   matchGuest(name: string): Promise<GuestMatch>;
+  /** Optional: answer a permission question from guest_info. Null → fall back. */
+  answerGuestInfo?(input: GuestInfoQaInput): Promise<GuestInfoQaResult | null>;
 }
 
 export interface CallflowResult {
@@ -74,6 +87,11 @@ const PACKAGE_RE =
   /\b(package|parcel|deliver|delivery|mail|food|groceries|maintenance|repair|leak|noise|question|billing|elevator|amenity|hoa|garage|parking)\b/i;
 const VISITOR_RE =
   /\b(visitor|guest|here to see|here for|is here|coming up|send (him|her|them) up|has arrived|arrived|lobby|front desk|downstairs|to visit|stopping by|wants? to (come|go) up|let (him|her|them) (up|in))\b|\bha(?:ve|s)\b.*\bhere\b/i;
+/** Permission / access questions about a named guest (answered from guest_info). */
+const PERMISSION_TOPIC_RE =
+  /\b(allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|unit|condo|key|fob|elevator|amenity)\b/i;
+const QUESTION_SHAPE_RE =
+  /\?|^\s*(is|are|can|could|may|does|do|did|has|have)\b/i;
 
 // Name tokens only — no periods/location words — so
 // "Sarah Connor. Is she allowed…" and "John Smith here in the lobby" stay clean.
@@ -156,6 +174,43 @@ export function isPartialName(name: string): boolean {
   return parts.length < 2;
 }
 
+const QUESTION_NAME_PATTERNS: RegExp[] = [
+  new RegExp(
+    `\\b(?:is|are|was|were|can|could|may|does|do|did|has|have)\\s+(${NAME})\\s+(?:allowed|permitted|able|authorized|welcome|ok|okay|cleared|have|get|use|park|enter|access)`,
+    "i"
+  ),
+  new RegExp(`\\b(?:does|can)\\s+(${NAME})\\s+have\\b`, "i"),
+  new RegExp(`\\b(${NAME})\\s+(?:allowed|permitted|authorized)\\b`, "i"),
+  new RegExp(
+    `\\b(?:for|about|regarding)\\s+(${NAME})(?:\\s|$|[.?!,])`,
+    "i"
+  ),
+];
+
+/** Pull a guest name out of a permission-style question. */
+export function extractQuestionGuestName(utterance: string): string | null {
+  const u = utterance.trim();
+  for (const re of QUESTION_NAME_PATTERNS) {
+    const name = plausibleName(cleanSpokenName(u.match(re)?.[1] ?? ""));
+    if (name) return name;
+  }
+  return null;
+}
+
+export function looksLikeGuestPermissionQuestion(utterance: string): boolean {
+  const u = utterance.trim();
+  if (!u) return false;
+  // Visitor arrivals stay on the admit path even if they end with "come up?"
+  if (VISITOR_RE.test(u) && !PACKAGE_RE.test(u)) return false;
+  return QUESTION_SHAPE_RE.test(u) || PERMISSION_TOPIC_RE.test(u);
+}
+
+function truncateNotes(info: string, max = 120): string {
+  const t = info.trim().replace(/\s+/g, " ");
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
+
 /** STT sometimes delivers dangling fragments ("I have a ") as whole turns —
  *  never act on them, ask again instead. */
 function isIncomplete(utterance: string): boolean {
@@ -235,6 +290,8 @@ async function matchAndRespond(
     };
   }
   if (result.match) {
+    const notes = result.match.guest_info?.trim();
+    const notesSuffix = notes ? ` — notes: ${truncateNotes(notes)}` : "";
     return {
       reply: `Yes — ${result.match.name} is expected. It's okay to send them up. Thank you!`,
       nextState: { phase: "DONE" },
@@ -244,7 +301,7 @@ async function matchAndRespond(
         {
           type: "notify",
           event: "guest.admitted",
-          message: `Guest = ${result.match.name} has been let into the building`,
+          message: `Guest = ${result.match.name} has been let into the building${notesSuffix}`,
         },
         { type: "outcome", outcome: "guest_admitted", guestId: result.match.id },
       ],
@@ -291,6 +348,60 @@ async function matchAndRespond(
   };
 }
 
+/**
+ * Before the package/building transfer fallback: if the utterance names an
+ * ACTIVE guest and asks a permission question, answer strictly from guest_info.
+ * Returns null to fall through to transfer (unclear / empty notes / inactive /
+ * LLM error / not a permission Q).
+ */
+async function tryGuestInfoAnswer(
+  utterance: string,
+  deps: CallflowDeps
+): Promise<CallflowResult | null> {
+  if (!deps.answerGuestInfo) return null;
+  if (!looksLikeGuestPermissionQuestion(utterance)) return null;
+
+  const spokenName = extractQuestionGuestName(utterance);
+  if (!spokenName) return null;
+
+  let matched: GuestMatch;
+  try {
+    matched = await deps.matchGuest(spokenName);
+  } catch {
+    return null;
+  }
+  // Never answer from notes for someone who isn't on the active list.
+  if (!matched.match) return null;
+
+  const info = matched.match.guest_info?.trim() ?? "";
+  if (!info) return null;
+
+  let qa: GuestInfoQaResult | null;
+  try {
+    qa = await deps.answerGuestInfo({
+      guestName: matched.match.name,
+      guestInfo: info,
+      question: utterance,
+    });
+  } catch {
+    return null;
+  }
+  if (!qa || qa.answer === "unclear" || !qa.reply.trim()) return null;
+
+  return {
+    reply: qa.reply.trim(),
+    nextState: { phase: "INTENT" },
+    lookupPending: true,
+    effects: [
+      {
+        type: "notify",
+        event: "guest.info_answered",
+        message: `${matched.match.name}: Q="${utterance}" → ${qa.answer}. ${qa.reply.trim()}`,
+      },
+    ],
+  };
+}
+
 async function handleIntent(
   utterance: string,
   deps: CallflowDeps,
@@ -309,20 +420,25 @@ async function handleIntent(
     return generalTransfer("scott");
   }
   const isVisitor = VISITOR_RE.test(utterance) && !PACKAGE_RE.test(utterance);
-  if (!isVisitor) {
-    return generalTransfer(MONICA_RE.test(utterance) ? "monica" : "scott");
+  if (isVisitor) {
+    const name = extractName(utterance);
+    if (!name) {
+      return {
+        reply: "Of course — what's the visitor's name?",
+        nextState: { phase: "ASK_NAME" },
+        effects: [],
+      };
+    }
+    // Auto-extracted name: admit on a match, but never deny on a miss —
+    // re-ask for the name explicitly instead (denyOnMiss: false).
+    return matchAndRespond(name, deps, { denyOnMiss: false });
   }
-  const name = extractName(utterance);
-  if (!name) {
-    return {
-      reply: "Of course — what's the visitor's name?",
-      nextState: { phase: "ASK_NAME" },
-      effects: [],
-    };
-  }
-  // Auto-extracted name: admit on a match, but never deny on a miss —
-  // re-ask for the name explicitly instead (denyOnMiss: false).
-  return matchAndRespond(name, deps, { denyOnMiss: false });
+
+  // Named-guest permission Q&A from Guest Info, before cold-transfer fallback.
+  const fromNotes = await tryGuestInfoAnswer(utterance, deps);
+  if (fromNotes) return fromNotes;
+
+  return generalTransfer(MONICA_RE.test(utterance) ? "monica" : "scott");
 }
 
 export async function step(
