@@ -97,8 +97,12 @@ const GREETING_ONLY_RE =
   /^\s*(hi|hello|hey|hi there|good (morning|afternoon|evening))?[.!,?\s]*$/i;
 const GOODBYE_RE =
   /\b(goodbye|good ?bye|bye|that(’|'| i)?s all|nothing (else|further)|no message|we're good|all set)\b/i;
+// Longer alternatives first — otherwise `\bno\b` eats "No thanks".
 const DONE_RE =
-  /^\s*(no|nope|no thanks?|nothing|nothing else|that(’|'| i)?s (it|all|everything))\b/i;
+  /^\s*(no thanks?|nothing else|nothing|nope|that(’|'| i)?s (it|all|everything)|no)\b/i;
+/** Lead-only match for DONE_RE — strips the done phrase so a continued clause remains. */
+const DONE_LEAD_RE =
+  /^\s*(no thanks?|nothing else|nothing|nope|that(?:’|'| i)?s (?:it|all|everything)|no)\b/i;
 const YES_RE =
   /^\s*(yes|yeah|yep|yup|sure|please|ok|okay|go ahead|do it|connect (me|us)?)\b/i;
 const NO_RE =
@@ -304,6 +308,17 @@ export function hasTransferNegation(utterance: string): boolean {
   return TRANSFER_NEGATION_RE.test(utterance.trim());
 }
 
+/**
+ * True only when the utterance is a bare done/no-thanks close.
+ * "No thanks, can she still use the garage?" is NOT done — the question remains.
+ */
+export function isPureDoneUtterance(utterance: string): boolean {
+  const u = utterance.trim();
+  if (!u || !DONE_RE.test(u)) return false;
+  const remainder = u.replace(DONE_LEAD_RE, "").replace(/^[,.\s]+/, "").trim();
+  return remainder.length === 0;
+}
+
 function truncateNotes(info: string, max = 120): string {
   const t = info.trim().replace(/\s+/g, " ");
   if (t.length <= max) return t;
@@ -504,10 +519,47 @@ export function stripDeclineLead(utterance: string): string {
       ""
     )
     .replace(
-      /^\s*((do\s*n[o’']?t|does\s*n[o’']?t)\s+(connect|transfer)[^.?!,]*)[,.]?\s*/i,
+      /^\s*((do\s*n[o’']?t|does\s*n[o’']?t|did\s*n[o’']?t|never)\s+(connect|transfer|put me through|put us through|call|ring)\b[^.?!,]*)[,.]?\s*/i,
+      ""
+    )
+    .replace(
+      /^\s*no[,.]?\s+(thanks?|thank you)?[,.]?\s*((do\s*n[o’']?t|does\s*n[o’']?t)\s+)?(connect|transfer)\b[^.?!,]*/i,
       ""
     )
     .trim();
+}
+
+/**
+ * Acknowledge a transfer refusal. Never transfer. If a continued guest
+ * question (or other intent) remains after stripping the decline, handle it.
+ */
+async function handleTransferDecline(
+  utterance: string,
+  deps: CallflowDeps,
+  state?: CallState
+): Promise<CallflowResult> {
+  const remainder = stripDeclineLead(utterance);
+  if (
+    remainder &&
+    remainder.toLowerCase() !== utterance.trim().toLowerCase() &&
+    !hasTransferNegation(remainder) &&
+    (looksLikeGuestInfoFollowUp(remainder, state) ||
+      detectExplicitTransfer(remainder) ||
+      VISITOR_RE.test(remainder) ||
+      PACKAGE_RE.test(remainder))
+  ) {
+    return handleIntent(remainder, deps, {
+      phase: "INTENT",
+      activeGuest: state?.activeGuest,
+      guestSnapshot: state?.guestSnapshot,
+      messageSaved: state?.messageSaved,
+    });
+  }
+  return {
+    reply: "No problem — anything else I can help with?",
+    nextState: withGuest(state),
+    effects: [],
+  };
 }
 
 async function matchAndRespond(
@@ -695,26 +747,11 @@ async function handleOfferTransfer(
   state: CallState
 ): Promise<CallflowResult> {
   const u = utterance.trim();
-  if (GOODBYE_RE.test(u)) return softClose(state);
+  if (GOODBYE_RE.test(u) || isPureDoneUtterance(u)) return softClose(state);
 
   // Decline / negation — never transfer; peel off a continued question if any.
   if (hasTransferNegation(u) || (NO_RE.test(u) && !detectOfferSelection(u))) {
-    const remainder = stripDeclineLead(u);
-    if (
-      remainder &&
-      remainder.toLowerCase() !== u.toLowerCase() &&
-      (looksLikeGuestInfoFollowUp(remainder, state) ||
-        detectExplicitTransfer(remainder) ||
-        VISITOR_RE.test(remainder) ||
-        PACKAGE_RE.test(remainder))
-    ) {
-      return handleIntent(remainder, deps, { ...state, phase: "INTENT" });
-    }
-    return {
-      reply: "No problem — anything else I can help with?",
-      nextState: withGuest(state),
-      effects: [],
-    };
+    return handleTransferDecline(u, deps, state);
   }
 
   const pick = detectOfferSelection(u);
@@ -752,11 +789,18 @@ async function handleIntent(
           phase: "INTENT",
           clarifies: clarifies + 1,
           activeGuest: state?.activeGuest,
+          messageSaved: state?.messageSaved,
         },
         effects: [],
       };
     }
     return offerConnect("I didn't catch that.", state);
+  }
+
+  // Negated connect requests must never fall through to the Scott transfer
+  // fallback ("Don't transfer me to Scott" → null explicit → was transferring).
+  if (hasTransferNegation(utterance)) {
+    return handleTransferDecline(utterance, deps, state);
   }
 
   // Explicit connection requests are never mistaken for approval or hangup.
@@ -846,7 +890,7 @@ export async function step(
     }
 
     case "INTENT": {
-      if (GOODBYE_RE.test(utterance) || DONE_RE.test(utterance)) {
+      if (GOODBYE_RE.test(utterance) || isPureDoneUtterance(utterance)) {
         // Soft close — do not send hangup; the human ends the call.
         return softClose(state);
       }
@@ -861,7 +905,13 @@ export async function step(
     }
 
     case "ASK_NAME": {
-      if (GOODBYE_RE.test(utterance)) return softClose(state);
+      if (GOODBYE_RE.test(utterance) || isPureDoneUtterance(utterance)) {
+        return softClose(state);
+      }
+      // Clear refusal to connect — never treat as a guest name / no-match transfer.
+      if (hasTransferNegation(utterance)) {
+        return handleTransferDecline(utterance, deps, state);
+      }
       const name = plausibleName(cleanSpokenName(utterance));
       if (!name) {
         const clarifies = state.clarifies ?? 0;
@@ -890,17 +940,51 @@ export async function step(
       return handleOfferTransfer(utterance, deps, state);
 
     case "HOLDING": {
-      // Legacy ack-hold phase — transfers are immediate now.
+      // Legacy ack-hold phase — transfers are immediate now, unless refused.
+      if (
+        GOODBYE_RE.test(utterance) ||
+        isPureDoneUtterance(utterance) ||
+        hasTransferNegation(utterance)
+      ) {
+        return handleTransferDecline(utterance, deps, state);
+      }
       return transferIfAvailable("scott", deps, state);
     }
 
     case "TAKE_MESSAGE": {
-      if (!utterance || DONE_RE.test(utterance) || GOODBYE_RE.test(utterance)) {
+      if (!utterance || isPureDoneUtterance(utterance) || GOODBYE_RE.test(utterance)) {
         // No message body — soft close; human ends the call.
         return {
           reply:
             "No problem — I'll let Scott and Monica know you called. I'm here if you need anything else.",
           nextState: withGuest(state),
+          effects: [],
+        };
+      }
+      if (hasTransferNegation(utterance)) {
+        const remainder = stripDeclineLead(utterance);
+        if (remainder && !hasTransferNegation(remainder)) {
+          // Decline + message body in one turn.
+          return {
+            reply: "Got it. Anything else?",
+            nextState: {
+              phase: "CONFIRM_MESSAGE",
+              messageParts: [...(state.messageParts ?? []), remainder],
+              activeGuest: state.activeGuest,
+              messageSaved: false,
+            },
+            effects: [],
+          };
+        }
+        return {
+          reply:
+            "No problem — go ahead with a message whenever you're ready, or ask anything else.",
+          nextState: {
+            phase: "TAKE_MESSAGE",
+            messageParts: state.messageParts ?? [],
+            activeGuest: state.activeGuest,
+            messageSaved: state.messageSaved,
+          },
           effects: [],
         };
       }
@@ -918,8 +1002,25 @@ export async function step(
 
     case "CONFIRM_MESSAGE": {
       // Caller finished the message — save/notify once, keep listening (no hangup).
-      if (!utterance || DONE_RE.test(utterance) || GOODBYE_RE.test(utterance)) {
+      if (!utterance || isPureDoneUtterance(utterance) || GOODBYE_RE.test(utterance)) {
         return finalizeTakenMessage(state);
+      }
+
+      // Transfer refusal while confirming — finalize once, never transfer.
+      if (hasTransferNegation(utterance)) {
+        const finalized = finalizeTakenMessage(state, {
+          keepListeningPrompt: false,
+        });
+        const declined = await handleTransferDecline(
+          utterance,
+          deps,
+          finalized.nextState
+        );
+        return {
+          ...declined,
+          reply: declined.reply,
+          effects: [...finalized.effects, ...declined.effects],
+        };
       }
 
       // Continued guest question / connect request after leaving a message:
@@ -1007,6 +1108,10 @@ export function transferFailedResult(
       phase: "TAKE_MESSAGE",
       messageParts: [],
       activeGuest: prev.nextState.activeGuest,
+      // New message-taking session: allow a distinct message even if an
+      // earlier failed-transfer message on this call was already saved.
+      // Same-session finalize still dedupes via messageSaved flipping true.
+      messageSaved: false,
     },
     effects:
       reason === "patch_failed"

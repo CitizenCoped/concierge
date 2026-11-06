@@ -8,6 +8,7 @@ import {
   extractQuestionGuestName,
   hasTransferNegation,
   isPartialName,
+  isPureDoneUtterance,
   looksLikeGuestInfoFollowUp,
   looksLikeGuestPermissionQuestion,
   step,
@@ -544,6 +545,147 @@ describe("offer negation and continued questions", () => {
     );
     expect(r.action).toBeUndefined();
     expect(r.nextState.phase).toBe("INTENT");
+  });
+});
+
+describe("INTENT full-step transfer consent (not helpers alone)", () => {
+  const janeNotes =
+    "Jane may use the garage. Expected around 3pm. Leave packages at the door.";
+  const jane = guest("Jane McDaniel", janeNotes);
+  const active = {
+    phase: "INTENT" as const,
+    activeGuest: {
+      id: jane.id,
+      name: jane.name,
+      guest_info: janeNotes,
+    },
+  };
+  const deps = depsWith(async () => ({ match: jane, candidates: [jane] }), {
+    answerGuestInfo: async () => ({
+      answer: "yes",
+      reply: "Yes, Jane McDaniel may use the garage.",
+    }),
+  });
+
+  it("isPureDoneUtterance does not swallow continued questions", () => {
+    expect(isPureDoneUtterance("No thanks")).toBe(true);
+    expect(isPureDoneUtterance("That's all")).toBe(true);
+    expect(
+      isPureDoneUtterance("No thanks, can she still use the garage?")
+    ).toBe(false);
+  });
+
+  it("Don't transfer me to Scott in INTENT never transfers via fallback", async () => {
+    const r = await step(active, "Don't transfer me to Scott", deps);
+    expect(r.action).toBeUndefined();
+    expect(r.action).not.toBe("transfer");
+    expect(r.transferTarget).toBeUndefined();
+    expect(r.nextState.phase).toBe("INTENT");
+    expect(r.reply.toLowerCase()).toMatch(/no problem|anything else/);
+  });
+
+  it("Don't connect me to Monica in INTENT never transfers via fallback", async () => {
+    const r = await step(active, "Don't connect me to Monica", deps);
+    expect(r.action).toBeUndefined();
+    expect(r.transferTarget).toBeUndefined();
+    expect(r.nextState.phase).toBe("INTENT");
+  });
+
+  it("No thanks, can she still use the garage? in INTENT answers Guest Info", async () => {
+    const r = await step(
+      active,
+      "No thanks, can she still use the garage?",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(r.reply.toLowerCase()).toMatch(/garage|yes/);
+    expect(notifyEvents(r.effects)).toContain("guest.info_answered");
+    // Must not soft-close via DONE_RE swallowing the question.
+    expect(r.reply.toLowerCase()).not.toMatch(/thank you! i'm here/);
+  });
+
+  it("GREETING phase also refuses negated connect without transferring", async () => {
+    const r = await step(
+      { phase: "GREETING" },
+      "Don't transfer me to Scott",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(notifyEvents(r.effects)).toContain("call.started");
+  });
+
+  it("ASK_NAME clear refusal does not no-match-transfer", async () => {
+    const r = await step(
+      { phase: "ASK_NAME", activeGuest: active.activeGuest },
+      "Don't connect me to Monica",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(outcomeOf(r.effects)).not.toBe("no_match_transferred");
+  });
+
+  it("CONFIRM_MESSAGE transfer refusal finalizes once and does not transfer", async () => {
+    const r = await step(
+      {
+        phase: "CONFIRM_MESSAGE",
+        messageParts: ["Please call about the visitor"],
+        activeGuest: active.activeGuest,
+      },
+      "Don't transfer me to Scott",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(outcomeOf(r.effects)).toBe("message_taken");
+    expect(r.nextState.messageSaved).toBe(true);
+  });
+});
+
+describe("messageSaved allows a distinct later message", () => {
+  it("second failed-transfer message session can save a new body", async () => {
+    const deps = depsWith(async () => ({ match: null, candidates: [] }));
+    const firstFail = transferFailedResult({
+      reply: "connecting",
+      nextState: { phase: "DONE" },
+      action: "transfer",
+      transferTarget: "scott",
+      effects: [],
+    });
+    const took = await step(
+      firstFail.nextState,
+      "Please call about guest A",
+      deps
+    );
+    const saved = await step(took.nextState, "That's all", deps);
+    expect(outcomeOf(saved.effects)).toBe("message_taken");
+    expect(saved.nextState.messageSaved).toBe(true);
+    // Same finalize again must not re-notify.
+    const dup = await step(saved.nextState, "Goodbye", deps);
+    expect(dup.effects.filter((e) => e.type === "saveMessage")).toHaveLength(0);
+
+    // A later distinct failed-transfer session resets messageSaved.
+    const secondFail = transferFailedResult({
+      reply: "connecting",
+      nextState: {
+        phase: "DONE",
+        activeGuest: saved.nextState.activeGuest,
+        messageSaved: true,
+      },
+      action: "transfer",
+      transferTarget: "scott",
+      effects: [],
+    });
+    expect(secondFail.nextState.messageSaved).toBe(false);
+    const took2 = await step(
+      secondFail.nextState,
+      "Please call about guest B instead",
+      deps
+    );
+    const saved2 = await step(took2.nextState, "That's all", deps);
+    expect(outcomeOf(saved2.effects)).toBe("message_taken");
+    const bodies = saved2.effects
+      .filter((e): e is Extract<Effect, { type: "saveMessage" }> => e.type === "saveMessage")
+      .map((e) => e.body);
+    expect(bodies).toEqual(["Please call about guest B instead"]);
   });
 });
 
