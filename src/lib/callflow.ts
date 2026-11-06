@@ -118,6 +118,12 @@ const PACKAGE_RE =
   /\b(package|parcel|deliver|delivery|mail|food|groceries|maintenance|repair|leak|noise|question|billing|elevator|amenity|hoa|garage|parking)\b/i;
 const VISITOR_RE =
   /\b(visitor|guest|here to see|here for|is here|coming up|send (him|her|them) up|has arrived|arrived|lobby|front desk|downstairs|to visit|stopping by|wants? to (come|go) up|let (him|her|them) (up|in))\b|\bha(?:ve|s)\b.*\bhere\b/i;
+/** Explicit "another / someone else" — always a fresh arrival, never prior-guest notes. */
+const NEW_OR_OTHER_VISITOR_RE =
+  /\b(another|someone else|somebody else|different (guest|visitor|person)|new (guest|visitor)|also (have|got)|one more|second (guest|visitor))\b/i;
+/** Arrival framing: "I have a guest…", "visitor in the lobby…" — not bare downstairs/parking. */
+const ARRIVAL_FRAMING_RE =
+  /\b(?:(?:i have|i'?ve got|we have|there is|there'?s)\b[\s\w',-]{0,40}\b(?:visitor|guest|someone|somebody)|(?:visitor|guest)\b[\s\w',-]{0,32}\b(?:lobby|front desk|downstairs|waiting|arrived|here)|in the lobby|at the front desk)\b/i;
 /** Permission / access questions about a named guest (answered from guest_info). */
 const PERMISSION_TOPIC_RE =
   /\b(allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|unit|condo|key|fob|elevator|amenity)\b/i;
@@ -163,7 +169,7 @@ const TRAILING_CLAUSE_RE =
 // Words that can never be a visitor's name (STT phrasing debris — a real call
 // once captured "here" as the name and wrongly denied the guest).
 const NON_NAME_RE =
-  /^(a|an|the|for|to|is|it|someone|somebody|here|there|them|him|her|she|he|they|his|hers|their|theirs|you|visitor|guest|waiting|lobby|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|anything|something|scott|monica)$/i;
+  /^(a|an|the|for|to|is|it|someone|somebody|another|other|different|here|there|them|him|her|she|he|they|his|hers|their|theirs|you|visitor|guest|waiting|lobby|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|anything|something|scott|monica)$/i;
 
 function plausibleName(candidate: string | undefined): string | null {
   const c = candidate?.trim().replace(/^(an?|the)\s+/i, "");
@@ -173,6 +179,12 @@ function plausibleName(candidate: string | undefined): string | null {
   // word (the acceptance-test guest is literally called "Test Visitor")
   if (/\b(front desk|lobby|package|delivery)\b/i.test(c)) return null;
   if (/^(visitor|guest)\b/i.test(c)) return null; // "visitor John" is phrasing debris
+  // "another guest" / "someone else" captured by NAME patterns are not people.
+  // Do not reject real names that merely start with Other (fixture: "Other Person").
+  if (/^(another|someone|somebody)\b/i.test(c)) return null;
+  if (/\b(another|someone|somebody|other|different)\s+(guest|visitor)\b/i.test(c)) {
+    return null;
+  }
   return c;
 }
 
@@ -268,6 +280,54 @@ export function looksLikeGuestPermissionQuestion(utterance: string): boolean {
 }
 
 /**
+ * Fresh visitor announcement (possibly different/unnamed) — must not reuse a
+ * prior activeGuest's notes for access answers. Same-guest pronoun follow-ups
+ * like "Can she park?" lack arrival framing and return false.
+ */
+export function looksLikeNewVisitorAnnouncement(
+  utterance: string,
+  state?: CallState
+): boolean {
+  const u = utterance.trim();
+  if (!u) return false;
+
+  if (NEW_OR_OTHER_VISITOR_RE.test(u)) return true;
+
+  // Need visitor/arrival context — pure "can she park downstairs?" is a follow-up.
+  const arrival = ARRIVAL_FRAMING_RE.test(u);
+  const visitorish = VISITOR_RE.test(u);
+  if (!arrival && !visitorish) return false;
+
+  // Package-only desk chatter without guest/visitor words is not a visitor arrival.
+  if (
+    PACKAGE_RE.test(u) &&
+    !/\b(visitor|guest)\b/i.test(u) &&
+    !NEW_OR_OTHER_VISITOR_RE.test(u)
+  ) {
+    return false;
+  }
+
+  // Named arrival (this turn) is a match path, not prior-guest notes.
+  if (extractName(u)) return true;
+
+  // Unnamed desk announcement ("I have a guest here…", "visitor in the lobby…")
+  // even when an access/parking question is tacked on.
+  if (arrival && !extractQuestionGuestName(u)) {
+    return true;
+  }
+
+  // Visitor-shaped with no name: treat as arrival needing identification.
+  // With an activeGuest, require real arrival framing so "park downstairs"
+  // (VISITOR_RE hits "downstairs") does not clear the known guest.
+  if (visitorish && !extractName(u) && !extractQuestionGuestName(u)) {
+    if (state?.activeGuest && !arrival) return false;
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Whether this utterance should be answered from Guest Info notes (permissions
  * OR factual/instruction follow-ups), rather than an unsolicited transfer.
  */
@@ -277,6 +337,9 @@ export function looksLikeGuestInfoFollowUp(
 ): boolean {
   const u = utterance.trim();
   if (!u) return false;
+
+  // Security: never answer from prior guest notes when this turn is a new arrival.
+  if (looksLikeNewVisitorAnnouncement(u, state)) return false;
 
   const hasGuestContext =
     Boolean(state?.activeGuest) || Boolean(extractQuestionGuestName(u));
@@ -858,21 +921,39 @@ async function handleIntent(
     return transferIfAvailable("monica", deps, state);
   }
 
-  // Visitor arrivals with an extractable name take priority over Guest Info
-  // Q&A (e.g. "…Her name is Sarah Connor. Is she allowed to come up?").
+  // Fresh / unnamed visitor announcements take priority over Guest Info —
+  // never answer access from a prior activeGuest's notes (security).
+  // Named arrivals (e.g. "…Her name is Sarah Connor. Is she allowed…") match.
+  if (looksLikeNewVisitorAnnouncement(utterance, state)) {
+    const name = extractName(utterance);
+    if (name) {
+      return matchAndRespond(name, deps, { denyOnMiss: false, state });
+    }
+    return {
+      reply: "Of course — what's the visitor's name?",
+      nextState: {
+        phase: "ASK_NAME",
+        // Clear stale identity so parking/access Qs cannot bind to the prior guest.
+        activeGuest: undefined,
+        guestSnapshot: state?.guestSnapshot,
+        messageSaved: state?.messageSaved,
+      },
+      effects: [],
+    };
+  }
+
+  // Visitor arrivals that didn't trip the new-announcement helper (rare) —
+  // still prefer match / ask-name over blind transfer when framed as a visitor.
   if (VISITOR_RE.test(utterance) && !PACKAGE_RE.test(utterance)) {
     const name = extractName(utterance);
     if (name) {
       return matchAndRespond(name, deps, { denyOnMiss: false, state });
     }
-    // No name yet: ask for it unless this is a Guest Info follow-up about a
-    // guest we already identified on this call.
-    if (!(state?.activeGuest && looksLikeGuestInfoFollowUp(utterance, state))) {
+    if (!state?.activeGuest) {
       return {
         reply: "Of course — what's the visitor's name?",
         nextState: {
           phase: "ASK_NAME",
-          activeGuest: state?.activeGuest,
           messageSaved: state?.messageSaved,
         },
         effects: [],

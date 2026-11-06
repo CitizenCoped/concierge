@@ -11,6 +11,7 @@ import {
   isPureDoneUtterance,
   looksLikeGuestInfoFollowUp,
   looksLikeGuestPermissionQuestion,
+  looksLikeNewVisitorAnnouncement,
   step,
   transferFailedResult,
   transferIfAvailable,
@@ -719,6 +720,155 @@ describe("INTENT full-step transfer consent (not helpers alone)", () => {
     expect(r.action).toBeUndefined();
     expect(outcomeOf(r.effects)).toBe("message_taken");
     expect(r.nextState.messageSaved).toBe(true);
+  });
+});
+
+describe("security: new/unnamed visitor must not reuse prior activeGuest", () => {
+  const janeNotes =
+    "Jane McDaniel is allowed access to the condo and secured underground parking.";
+  const jane = guest("Jane McDaniel", janeNotes);
+
+  const admitJane = async () => {
+    const deps = depsWith(async () => ({ match: jane, candidates: [jane] }), {
+      answerGuestInfo: async () => ({
+        answer: "yes",
+        reply: "Yes, Jane McDaniel has underground parking access.",
+      }),
+    });
+    const admitted = await step(
+      { phase: "INTENT" },
+      "Jane McDaniel is here to see Scott",
+      deps
+    );
+    expect(outcomeOf(admitted.effects)).toBe("guest_admitted");
+    expect(admitted.nextState.activeGuest?.name).toBe("Jane McDaniel");
+    return { admitted, deps };
+  };
+
+  it("helper: new arrival vs same-guest pronoun follow-up", () => {
+    const state = {
+      phase: "INTENT" as const,
+      activeGuest: {
+        id: jane.id,
+        name: jane.name,
+        guest_info: janeNotes,
+      },
+    };
+    expect(
+      looksLikeNewVisitorAnnouncement(
+        "I also have someone else here, can he come up?",
+        state
+      )
+    ).toBe(true);
+    expect(
+      looksLikeNewVisitorAnnouncement(
+        "There's a visitor in the lobby, can they park?",
+        state
+      )
+    ).toBe(true);
+    expect(
+      looksLikeGuestInfoFollowUp(
+        "I also have someone else here, can he come up?",
+        state
+      )
+    ).toBe(false);
+    // Legitimate same-guest follow-up
+    expect(
+      looksLikeNewVisitorAnnouncement("Can she still use the garage?", state)
+    ).toBe(false);
+    expect(
+      looksLikeGuestInfoFollowUp("Can she still use the garage?", state)
+    ).toBe(true);
+  });
+
+  it("after Jane admit, unnamed other visitor asks access → ASK_NAME, no Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return {
+          answer: "yes" as const,
+          reply: "Yes, Jane McDaniel may come up.",
+        };
+      },
+    };
+    const r = await step(
+      admitted.nextState,
+      "I also have someone else here, can he come up?",
+      guarded
+    );
+    expect(r.action).toBeUndefined();
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeUndefined();
+    expect(answeredFromNotes).toBe(false);
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+    expect(outcomeOf(r.effects)).not.toBe("guest_admitted");
+    expect(r.reply.toLowerCase()).toMatch(/name/);
+  });
+
+  it("after Jane admit, unnamed visitor + parking question does not use Jane parking", async () => {
+    const { admitted, deps } = await admitJane();
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return {
+          answer: "yes" as const,
+          reply: "Yes, Jane McDaniel has underground parking access.",
+        };
+      },
+    };
+    const r = await step(
+      admitted.nextState,
+      "There's a visitor in the lobby, can they park in the garage?",
+      guarded
+    );
+    expect(answeredFromNotes).toBe(false);
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeUndefined();
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+    expect(r.reply.toLowerCase()).not.toMatch(/jane/);
+  });
+
+  it("after Jane admit, same-guest pronoun parking follow-up still works", async () => {
+    const { admitted, deps } = await admitJane();
+    const r = await step(
+      admitted.nextState,
+      "Can she still use the garage?",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(notifyEvents(r.effects)).toContain("guest.info_answered");
+    expect(r.nextState.activeGuest?.name).toBe("Jane McDaniel");
+  });
+
+  it("after Jane admit then ASK_NAME, access question before name does not revive Jane", async () => {
+    const { admitted, deps } = await admitJane();
+    const ask = await step(
+      admitted.nextState,
+      "I have another guest here",
+      deps
+    );
+    expect(ask.nextState.phase).toBe("ASK_NAME");
+    expect(ask.nextState.activeGuest).toBeUndefined();
+
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
+    // During ASK_NAME, an access question is not a guest name — re-ask, no notes.
+    const r = await step(ask.nextState, "Can he park in the garage?", guarded);
+    expect(answeredFromNotes).toBe(false);
+    expect(r.action).toBeUndefined();
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
   });
 });
 
