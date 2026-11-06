@@ -103,7 +103,7 @@ const GOODBYE_RE =
   /\b(goodbye|good ?bye|bye|that(’|'| i)?s all|nothing (else|further)|no message|we're good|all set)\b/i;
 /** Whole-turn holds only — "Hold on, can she park?" must still reach Guest Info. */
 const HOLD_ONLY_RE =
-  /^\s*(hold on|hold please|one (sec|second|moment|minute)|let me (check|see|ask)|give me a (sec|second|moment|minute))[.!,?\s]*$/i;
+  /^\s*(?:hold on(?:\s+a\s+(?:sec|second|moment|minute))?(?:\s+please)?|hold please|one (?:sec|second|moment|minute)(?:\s+please)?|let me (?:check|see|ask)|give me a (?:sec|second|moment|minute))[.!,?\s]*$/i;
 // Longer alternatives first — otherwise `\bno\b` eats "No thanks" / "No thank you".
 const DONE_RE =
   /^\s*(no thank you|no thanks?|thank you|thanks|nothing else|nothing|nope|that(’|'| i)?s (it|all|everything)|no)\b/i;
@@ -300,9 +300,12 @@ function looksLikeSameGuestContinuity(
   const u = utterance.trim();
   if (NEW_OR_OTHER_VISITOR_RE.test(u)) return false;
   // Indefinite new person / fresh "a visitor" is not the known guest.
+  // Do not treat "visitor parking" / "visitor pass" as a new person.
   if (
     /\b(someone|somebody)\b/i.test(u) ||
-    /\b(?:got|have)\s+(?:a\s+)?visitor\b/i.test(u) ||
+    /\b(?:got|have)\s+(?:a\s+)?visitor\b(?!\s+(?:parking|pass|spot|space|permit|sticker|badge))\b/i.test(
+      u
+    ) ||
     /\b(?:a|an|another|new)\s+(?:guest|visitor)\b/i.test(u)
   ) {
     return false;
@@ -329,7 +332,23 @@ function looksLikeIndefiniteUnnamedArrival(utterance: string): boolean {
   ) {
     return true;
   }
-  if (/\b(?:got|have)\s+(?:a\s+)?visitor\b/i.test(u)) return true;
+  // Unnamed he/they at a desk location — fail closed (not prior-guest notes).
+  // she/her lobby status is handled by looksLikeSameGuestContinuity instead.
+  if (
+    /\b(he|they|him|them)\b[\w\s,',-]{0,48}\b(downstairs|lobby|front desk|waiting|arrived|outside|door)\b/i.test(
+      u
+    )
+  ) {
+    return true;
+  }
+  // Fresh "got/have a visitor" — not compound nouns like "visitor parking".
+  if (
+    /\b(?:got|have)\s+(?:a\s+)?visitor\b(?!\s+(?:parking|pass|spot|space|permit|sticker|badge))\b/i.test(
+      u
+    )
+  ) {
+    return true;
+  }
   // Delivery/person at door asking to come up / be let in — not a leave-package note.
   if (
     /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:a\s+)?(?:delivery|package|parcel)\s+here\b/i.test(
@@ -1150,13 +1169,12 @@ export async function step(
           effects: [],
         };
       }
-      // Guest follow-up / new unnamed arrival / connect — not message body.
-      // Require a real new-visitor signal or an activeGuest notes question —
-      // do not divert on a lone "guest" word inside dictated message text.
+      // New unnamed/named arrival mid-dictation — not message body.
+      // Do not divert guest-info phrasing or "call Scott" here: after a failed
+      // transfer the body is often about that guest / asking Scott to call back.
+      // CONFIRM_MESSAGE still finalizes then routes real follow-ups.
       if (
         looksLikeNewVisitorAnnouncement(utterance, state) ||
-        detectExplicitTransfer(utterance) ||
-        (state.activeGuest && looksLikeGuestInfoFollowUp(utterance, state)) ||
         (VISITOR_RE.test(utterance) && extractName(utterance))
       ) {
         return handleIntent(utterance, deps, {
