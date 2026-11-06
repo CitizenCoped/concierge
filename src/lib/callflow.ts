@@ -45,8 +45,12 @@ export interface CallState {
   holds?: number;
   /** active guest snapshot loaded once per call (route-managed) */
   guestSnapshot?: Array<{ id: string; name: string; guest_info?: string | null }>;
-  /** Last identified guest on this call — used for pronoun follow-ups. */
-  activeGuest?: ActiveGuest;
+  /**
+   * Last identified guest on this call — used for pronoun follow-ups.
+   * `null` = intentional clear (e.g. new unnamed visitor); omit/`undefined` =
+   * leave unchanged for the persistence layer to carry forward.
+   */
+  activeGuest?: ActiveGuest | null;
   /** True after a failed-transfer message was saved+notified once. */
   messageSaved?: boolean;
 }
@@ -397,10 +401,16 @@ function asActiveGuest(g: GuestNameRow | ActiveGuest): ActiveGuest {
   return { id: g.id, name: g.name, guest_info: g.guest_info };
 }
 
-function withGuest(state: CallState | undefined, guest?: ActiveGuest): CallState {
+function withGuest(
+  state: CallState | undefined,
+  guest?: ActiveGuest | null
+): CallState {
+  // Preserve explicit null clears; only fall back when guest arg is omitted.
+  const activeGuest =
+    guest !== undefined ? guest : (state?.activeGuest ?? undefined);
   return {
     phase: "INTENT",
-    activeGuest: guest ?? state?.activeGuest,
+    ...(activeGuest !== undefined ? { activeGuest } : {}),
     guestSnapshot: state?.guestSnapshot,
     messageSaved: state?.messageSaved,
   };
@@ -933,8 +943,8 @@ async function handleIntent(
       reply: "Of course — what's the visitor's name?",
       nextState: {
         phase: "ASK_NAME",
-        // Clear stale identity so parking/access Qs cannot bind to the prior guest.
-        activeGuest: undefined,
+        // Explicit null clear — must survive webhook persistence (not `??` prior).
+        activeGuest: null,
         guestSnapshot: state?.guestSnapshot,
         messageSaved: state?.messageSaved,
       },

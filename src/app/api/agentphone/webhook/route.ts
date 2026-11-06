@@ -18,6 +18,7 @@ import {
   type CallflowResult,
   type TransferTarget,
 } from "@/lib/callflow";
+import { mergePersistedCallState } from "@/lib/callstate";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -166,16 +167,15 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         }
 
         result = await step(state, utterance, deps);
-        // Persist snapshot / activeGuest / messageSaved across turns.
+        // Merge for persistence: intentional activeGuest/messageSaved clears
+        // must stick — never `??` prior guest (resurrects cleared identity).
         result = {
           ...result,
-          nextState: {
-            ...result.nextState,
-            guestSnapshot: snapshot,
-            activeGuest: result.nextState.activeGuest ?? state.activeGuest,
-            messageSaved:
-              result.nextState.messageSaved ?? state.messageSaved,
-          },
+          nextState: mergePersistedCallState(
+            result.nextState,
+            state,
+            snapshot
+          ),
         };
 
         if (result.action === "transfer") {
@@ -189,14 +189,11 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
             result = transferFailedResult(result, "patch_failed");
             result = {
               ...result,
-              nextState: {
-                ...result.nextState,
-                guestSnapshot: snapshot,
-                activeGuest:
-                  result.nextState.activeGuest ?? state.activeGuest,
-                messageSaved:
-                  result.nextState.messageSaved ?? state.messageSaved,
-              },
+              nextState: mergePersistedCallState(
+                result.nextState,
+                state,
+                snapshot
+              ),
             };
             write({ text: result.reply });
           }

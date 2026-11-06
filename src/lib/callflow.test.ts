@@ -801,7 +801,7 @@ describe("security: new/unnamed visitor must not reuse prior activeGuest", () =>
     );
     expect(r.action).toBeUndefined();
     expect(r.nextState.phase).toBe("ASK_NAME");
-    expect(r.nextState.activeGuest).toBeUndefined();
+    expect(r.nextState.activeGuest).toBeNull();
     expect(answeredFromNotes).toBe(false);
     expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
     expect(outcomeOf(r.effects)).not.toBe("guest_admitted");
@@ -828,7 +828,7 @@ describe("security: new/unnamed visitor must not reuse prior activeGuest", () =>
     );
     expect(answeredFromNotes).toBe(false);
     expect(r.nextState.phase).toBe("ASK_NAME");
-    expect(r.nextState.activeGuest).toBeUndefined();
+    expect(r.nextState.activeGuest).toBeNull();
     expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
     expect(r.reply.toLowerCase()).not.toMatch(/jane/);
   });
@@ -853,7 +853,7 @@ describe("security: new/unnamed visitor must not reuse prior activeGuest", () =>
       deps
     );
     expect(ask.nextState.phase).toBe("ASK_NAME");
-    expect(ask.nextState.activeGuest).toBeUndefined();
+    expect(ask.nextState.activeGuest).toBeNull();
 
     let answeredFromNotes = false;
     const guarded = {
