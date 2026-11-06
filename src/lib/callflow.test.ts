@@ -570,9 +570,91 @@ describe("INTENT full-step transfer consent (not helpers alone)", () => {
   it("isPureDoneUtterance does not swallow continued questions", () => {
     expect(isPureDoneUtterance("No thanks")).toBe(true);
     expect(isPureDoneUtterance("That's all")).toBe(true);
+    expect(isPureDoneUtterance("Thank you")).toBe(true);
+    expect(isPureDoneUtterance("No thank you")).toBe(true);
     expect(
       isPureDoneUtterance("No thanks, can she still use the garage?")
     ).toBe(false);
+    expect(
+      isPureDoneUtterance("No thank you, can she still use the garage?")
+    ).toBe(false);
+  });
+
+  it("post-admit thanks and holds soft-close without transferring", async () => {
+    for (const utterance of [
+      "Thank you",
+      "No thank you",
+      "hold on",
+      "let me check",
+    ]) {
+      const r = await step(active, utterance, deps);
+      expect(r.action).toBeUndefined();
+      expect(r.transferTarget).toBeUndefined();
+      expect(r.nextState.phase).toBe("INTENT");
+    }
+  });
+
+  it("guest connect/talk questions are not transfer consent", async () => {
+    expect(detectExplicitTransfer("Can she connect to wifi?")).toBeNull();
+    expect(detectExplicitTransfer("Can she talk to them?")).toBeNull();
+    const wifi = await step(active, "Can she connect to wifi?", {
+      ...deps,
+      answerGuestInfo: async () => ({
+        answer: "unclear",
+        reply: "",
+      }),
+    });
+    expect(wifi.action).toBeUndefined();
+    expect(wifi.transferTarget).toBeUndefined();
+    // Unclear notes → offer connect, not an immediate cold transfer.
+    expect(wifi.nextState.phase).toBe("OFFER_TRANSFER");
+  });
+
+  it("Is Monica available? still transfers after a guest is identified", async () => {
+    const r = await step(active, "Is Monica available?", deps);
+    expect(r.action).toBe("transfer");
+    expect(r.transferTarget).toBe("monica");
+  });
+
+  it("offer please/don't instructions are not yes/no consent", async () => {
+    expect(
+      detectOfferSelection("Please tell her to use the elevator")
+    ).toBeNull();
+    const please = await step(
+      {
+        phase: "OFFER_TRANSFER",
+        activeGuest: active.activeGuest,
+      },
+      "Please tell her to use the elevator",
+      {
+        ...deps,
+        answerGuestInfo: async () => ({
+          answer: "answered",
+          reply: "Please have Jane McDaniel use the elevator.",
+        }),
+      }
+    );
+    expect(please.action).toBeUndefined();
+    expect(please.nextState.phase).toBe("INTENT");
+    expect(notifyEvents(please.effects)).toContain("guest.info_answered");
+
+    const dont = await step(
+      {
+        phase: "OFFER_TRANSFER",
+        activeGuest: active.activeGuest,
+      },
+      "Don't let her use the garage",
+      {
+        ...deps,
+        answerGuestInfo: async () => ({
+          answer: "no",
+          reply: "No, Jane McDaniel should not use the garage.",
+        }),
+      }
+    );
+    expect(dont.action).toBeUndefined();
+    expect(dont.nextState.phase).toBe("INTENT");
+    expect(dont.reply.toLowerCase()).not.toMatch(/^no problem/);
   });
 
   it("Don't transfer me to Scott in INTENT never transfers via fallback", async () => {
