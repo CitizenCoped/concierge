@@ -184,7 +184,7 @@ Event catalog (titles are the Pushover titles — keep these exact strings):
 | call.started        | 📞 Front Desk Call             | "Front desk is calling the concierge line…"       |
 | guest.admitted      | ✅ Guest Admitted              | "Guest = {name} has been let into the building"   |
 | guest.denied        | ⛔ No Guest Match              | "'{spoken name}' not on list — transferring"      |
-| guest.info_answered | ℹ️ Guest Info Answered         | "{name}: Q=\"…\" → yes|no. {reply}"               |
+| guest.info_answered | ℹ️ Guest Info Answered         | "{name}: Q=\"…\" → yes|no|answered. {reply}"     |
 | call.transfer       | 📲 Transferring to {target}    | "Concierge holding; transferring to {target}"     |
 | message.taken       | 📝 Message From Concierge      | "Message From Concierge = {body}"                 |
 | call.ended          | ☎️ Call Ended                  | "{outcome summary}"                               |
@@ -244,32 +244,52 @@ States & behavior:
    the spoken fallback greeting only fires on an empty/greeting-only first
    utterance.)*
 2. **INTENT**: classify the concierge's utterance:
+   - explicit "connect me to Scott/Monica" → TRANSFER (or ask which); never
+     treat as approval or hangup. Only route to a target whose phone env var
+     is set — never silently remap Monica → Scott.
    - visitor announcement → ASK_NAME (or extract name directly if spoken)
-   - permission / access question naming an **active** guest with non-empty
-     `guest_info` → narrow LLM step answers strictly from those notes
-     (`yes`/`no`/`unclear` + short spoken reply). Fire `guest.info_answered`.
-     On `unclear`, empty notes, inactive/unknown guest, or LLM timeout/error
-     (~2.5s) → fall through to TRANSFER. Never invent permissions; never
-     answer for someone not on the active list.
-   - anything else (package, maintenance, question for Scott/Monica) →
-     TRANSFER
+   - Guest Info follow-up about a named **or previously identified** active
+     guest → answer strictly from `guest_info` via AI Gateway. Covers
+     yes/no access **and** factual/instruction questions (expected time,
+     what to tell them, delivery placement, special instructions, etc.).
+     Model answers: `yes`/`no`/`answered`/`unclear`. Fire
+     `guest.info_answered` on grounded answers. On `unclear`, empty notes,
+     or LLM timeout/error (~2.5s) → **OFFER_TRANSFER** (say you're not sure;
+     ask if they want Scott or Monica). Do **not** blind-transfer follow-ups.
+     Never invent facts/permissions; never answer for someone not on the
+     active list; list membership alone is not permission.
+   - Negated connect requests ("don't connect me to Monica") and resident
+     mentions inside guest questions ("Did Monica leave instructions?") are
+     **not** transfers. OFFER_TRANSFER declines peel off a continued question
+     when present.
+   - anything else (package, maintenance, etc.) → TRANSFER
    *(Implementation notes from live testing: STT sometimes delivers dangling
    fragments — e.g. "I have a " — as complete turns; INTENT asks for
-   clarification up to twice before failing safe to TRANSFER. A name
-   auto-extracted from an announcement is best-effort: on a match it admits,
-   but on a miss it re-asks for the name explicitly (ASK_NAME) rather than
-   denying — a deny can only follow a name the concierge stated explicitly.
-   Visitor-arrival flow is unchanged and takes priority over Guest Info Q&A.)*
+   clarification up to twice before failing safe. A name auto-extracted from
+   an announcement is best-effort: on a match it admits, but on a miss it
+   re-asks (ASK_NAME) rather than denying. Visitor-arrival takes priority
+   over Guest Info Q&A. **Do not hang up after approval or after taking a
+   message** — keep listening; store `activeGuest` for pronoun follow-ups.
+   Soft-close on goodbye without `hangup: true`; the human ends the call.
+   App-triggered hangup is reserved for nothing on the hot path. AgentPhone
+   may still end the call after provider silence/`maxSilenceMs` — see
+   provision script vs live agent config.)*
 3. **ASK_NAME → MATCH**: run the guest matcher (active list loaded once per
    call; phonetic Soundex + Levenshtein, admit only on exactly one candidate).
    - Exactly one active match → say "Yes — {name} is expected. It's okay to
-     send them up. Thank you!"; fire `guest.admitted`; mark outcome
-     `guest_admitted`; `hangup: true` after confirmation.
+     send them up. Anything else I can help with?"; fire `guest.admitted`;
+     mark outcome `guest_admitted`; **stay on INTENT with `activeGuest` —
+     do not hang up**.
    - Partial/single-token miss → re-ask once for first and last name before
      denying.
    - No/ambiguous match after that → say "I don't see them on the approved
      list. Connecting you to Scott or Monica now."; fire `guest.denied`; →
-     TRANSFER.
+     TRANSFER (fail-closed; unchanged).
+3b. **OFFER_TRANSFER**: after an uncertain Guest Info answer. Yes → ask
+    Scott or Monica; name → TRANSFER if configured; No / negation → return
+    to INTENT listening (do not transfer). Continued guest questions while
+    an offer is pending re-enter INTENT with `activeGuest` kept — bare
+    mentions of Scott/Monica inside those questions are not consent.
 4. **TRANSFER**:
    - Choose target: Scott first (`SCOTT_PHONE`); allow "is Monica available?"
      style requests to select Monica (`MONICA_PHONE`). `SCOTT_PHONE` is the
@@ -281,11 +301,14 @@ States & behavior:
      the front desk is being connected.
    - If the PATCH fails → TAKE_MESSAGE. (AgentPhone cold transfer is one-way;
      a declined transfer can still land in personal voicemail — accepted.)
-5. **TAKE_MESSAGE**: "I wasn't able to reach them. I can take a message —
-   go ahead." Capture the utterance(s), confirm back, store in `messages`,
-   fire `message.taken`, outcome `message_taken`, then thank + hangup.
-6. All states: if the concierge says goodbye/nothing further, close politely.
-   `maxSilenceMs` on the agent keeps hung calls from running forever.
+5. **TAKE_MESSAGE / CONFIRM_MESSAGE**: "I wasn't able to reach them. I can
+   take a message — go ahead." Capture utterance(s), save + `message.taken`
+   **exactly once**, return to INTENT listening — **no hangup**. Further
+   guest questions stay answerable; goodbye soft-closes; human hangs up.
+6. All states: if the concierge says goodbye/nothing further, soft-close
+   politely without `hangup: true`. Provider silence timeout may still end
+   idle calls (`maxSilenceMs` in provision script is 60000; live agent value
+   must be read from AgentPhone to confirm — do not assume).
 
 **CHECK 5**
 - [ ] `src/lib/callflow.test.ts` covers: happy-path admit; expired guest

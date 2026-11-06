@@ -18,6 +18,7 @@ import {
   type CallflowResult,
   type TransferTarget,
 } from "@/lib/callflow";
+import { mergePersistedCallState } from "@/lib/callstate";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -148,13 +149,17 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         const deps = {
           matchGuest: async (name: string) => matchGuestAgainst(name, snapshot),
           answerGuestInfo: answerFromGuestInfo,
+          transferAvailable: {
+            scott: Boolean(process.env.SCOTT_PHONE?.trim()),
+            monica: Boolean(process.env.MONICA_PHONE?.trim()),
+          },
         };
 
         // Peek: only fill dead air when a guest lookup or notes Q&A is likely.
         const maybeLookup =
           state.phase === "ASK_NAME" ||
           ((state.phase === "GREETING" || state.phase === "INTENT") &&
-            /\b(visitor|guest|here|lobby|name|allowed|park|garage|access)\b/i.test(
+            /\b(visitor|guest|here|lobby|name|allowed|park|garage|access|expected|instructions?|delivery|tell (her|him|them))\b/i.test(
               utterance
             ));
         if (maybeLookup) {
@@ -162,10 +167,15 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         }
 
         result = await step(state, utterance, deps);
-        // Persist the snapshot on every turn so later turns skip the DB round-trip.
+        // Merge for persistence: intentional activeGuest/messageSaved clears
+        // must stick — never `??` prior guest (resurrects cleared identity).
         result = {
           ...result,
-          nextState: { ...result.nextState, guestSnapshot: snapshot },
+          nextState: mergePersistedCallState(
+            result.nextState,
+            state,
+            snapshot
+          ),
         };
 
         if (result.action === "transfer") {
@@ -179,7 +189,11 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
             result = transferFailedResult(result, "patch_failed");
             result = {
               ...result,
-              nextState: { ...result.nextState, guestSnapshot: snapshot },
+              nextState: mergePersistedCallState(
+                result.nextState,
+                state,
+                snapshot
+              ),
             };
             write({ text: result.reply });
           }
