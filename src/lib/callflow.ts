@@ -96,17 +96,22 @@ export const GREETING_TEXT =
 const GREETING_ONLY_RE =
   /^\s*(hi|hello|hey|hi there|good (morning|afternoon|evening))?[.!,?\s]*$/i;
 const GOODBYE_RE =
-  /\b(goodbye|good ?bye|bye|that(’|'| i)?s all|nothing (else|further)|no message|we're good|all set)\b/i;
-// Longer alternatives first — otherwise `\bno\b` eats "No thanks".
+  /\b(goodbye|good ?bye|bye|that(’|'| i)?s all|nothing (else|further)|no message|we're good|all set|hold on|hold please|one (sec|second|moment|minute)|let me (check|see|ask)|give me a (sec|second|moment|minute))\b/i;
+// Longer alternatives first — otherwise `\bno\b` eats "No thanks" / "No thank you".
 const DONE_RE =
-  /^\s*(no thanks?|nothing else|nothing|nope|that(’|'| i)?s (it|all|everything)|no)\b/i;
+  /^\s*(no thank you|no thanks?|thank you|thanks|nothing else|nothing|nope|that(’|'| i)?s (it|all|everything)|no)\b/i;
 /** Lead-only match for DONE_RE — strips the done phrase so a continued clause remains. */
 const DONE_LEAD_RE =
-  /^\s*(no thanks?|nothing else|nothing|nope|that(?:’|'| i)?s (?:it|all|everything)|no)\b/i;
+  /^\s*(no thank you|no thanks?|thank you|thanks|nothing else|nothing|nope|that(?:’|'| i)?s (?:it|all|everything)|no)\b/i;
 const YES_RE =
   /^\s*(yes|yeah|yep|yup|sure|please|ok|okay|go ahead|do it|connect (me|us)?)\b/i;
+/** Whole-turn affirmatives only — "Please tell her…" must not count as offer consent. */
+const SHORT_YES_RE =
+  /^\s*(?:yes|yeah|yep|yup|sure|please|ok|okay|go ahead|do it|connect (?:me|us)?)(?:[,.\s]+(?:yes|yeah|yep|yup|sure|please|ok|okay|go ahead|do it))*[.!,?\s]*$/i;
+// Bare "don't"/"do not" are NOT declines — those may be guest instructions
+// ("don't let her use the garage"). Transfer refusals use hasTransferNegation.
 const NO_RE =
-  /^\s*(no|nope|nah|no thanks?|not now|don't|do not|never ?mind)\b/i;
+  /^\s*(no|nope|nah|no thank you|no thanks?|not now|never ?mind)\b/i;
 const SCOTT_RE = /\bscott\b/i;
 const MONICA_RE = /\bmonica\b/i;
 const PACKAGE_RE =
@@ -457,9 +462,22 @@ export function detectExplicitTransfer(utterance: string): TransferTarget | "ask
   if (!u) return null;
   // Negated requests are never consent to connect.
   if (hasTransferNegation(u)) return null;
+  const isQuestion = /\?/.test(u) || QUESTION_SHAPE_RE.test(u);
+  const namesResident = SCOTT_RE.test(u) || MONICA_RE.test(u);
+  // Questions without a named resident are transfers only for first-person
+  // connect requests. Guest follow-ups ("Can she connect to wifi?", "Can she
+  // talk to them?") must not steal the turn into "who to connect?".
+  if (isQuestion && !namesResident) {
+    const firstPersonConnect =
+      /\b((connect|transfer) (me|us)|put (me|us) through)\b/i.test(u) ||
+      /\b(can|could|may) (i|we)\b.{0,48}\b(connect|transfer|connected|put (me|us))\b/i.test(
+        u
+      );
+    if (!firstPersonConnect) return null;
+  }
   // Questions about a resident ("Did Monica leave instructions?") are not transfers.
   if (
-    /\?/.test(u) &&
+    isQuestion &&
     !CONNECT_INTENT_RE.test(u) &&
     !/\b(still )?(be )?connected\b/i.test(u)
   ) {
@@ -498,10 +516,12 @@ export function detectOfferSelection(utterance: string): TransferTarget | "ask" 
   const scott = SCOTT_RE.test(u);
   const monica = MONICA_RE.test(u);
   // Bare name or short affirmative pick: "Scott", "Monica please", "Yes, Scott"
+  // Leading please/ok alone is not consent when more instruction follows
+  // ("Please tell her to use the elevator").
   if (/^\s*(yes|yeah|yep|sure|ok|okay)[,.]?\s+/i.test(u) || YES_RE.test(u)) {
     if (scott && !monica) return "scott";
     if (monica && !scott) return "monica";
-    if (!scott && !monica) return "ask";
+    if (!scott && !monica) return SHORT_YES_RE.test(u) ? "ask" : null;
     return "ask";
   }
   if (/^\s*scott\b/i.test(u) && !monica) return "scott";
@@ -515,7 +535,7 @@ export function stripDeclineLead(utterance: string): string {
   return utterance
     .trim()
     .replace(
-      /^\s*(no|nope|nah|no thanks?|not now|never ?mind)[,.]?\s*/i,
+      /^\s*(no thank you|no thanks?|nope|nah|not now|never ?mind|no)[,.]?\s*/i,
       ""
     )
     .replace(
@@ -824,14 +844,16 @@ async function handleIntent(
   // Direct "Is Monica available?" / package-for-Monica — only when this is not
   // a Guest Info question about a guest. Resident mentions inside guest
   // questions ("Did Monica leave instructions?") must not transfer.
+  // "Is Monica available?" stays a Monica transfer even with activeGuest set
+  // (looksLikeGuestInfoFollowUp is true for any question once a guest is known).
   if (
     MONICA_RE.test(utterance) &&
     !SCOTT_RE.test(utterance) &&
     !hasTransferNegation(utterance) &&
-    !looksLikeGuestInfoFollowUp(utterance, state) &&
-    (CONNECT_INTENT_RE.test(utterance) ||
-      /\bis monica available\b/i.test(utterance) ||
-      /\b(question|package|delivery|maintenance)\b/i.test(utterance))
+    (/\bis monica available\b/i.test(utterance) ||
+      (!looksLikeGuestInfoFollowUp(utterance, state) &&
+        (CONNECT_INTENT_RE.test(utterance) ||
+          /\b(question|package|delivery|maintenance)\b/i.test(utterance))))
   ) {
     return transferIfAvailable("monica", deps, state);
   }
