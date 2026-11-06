@@ -100,7 +100,10 @@ export const GREETING_TEXT =
 const GREETING_ONLY_RE =
   /^\s*(hi|hello|hey|hi there|good (morning|afternoon|evening))?[.!,?\s]*$/i;
 const GOODBYE_RE =
-  /\b(goodbye|good ?bye|bye|that(’|'| i)?s all|nothing (else|further)|no message|we're good|all set|hold on|hold please|one (sec|second|moment|minute)|let me (check|see|ask)|give me a (sec|second|moment|minute))\b/i;
+  /\b(goodbye|good ?bye|bye|that(’|'| i)?s all|nothing (else|further)|no message|we're good|all set)\b/i;
+/** Whole-turn holds only — "Hold on, can she park?" must still reach Guest Info. */
+const HOLD_ONLY_RE =
+  /^\s*(hold on|hold please|one (sec|second|moment|minute)|let me (check|see|ask)|give me a (sec|second|moment|minute))[.!,?\s]*$/i;
 // Longer alternatives first — otherwise `\bno\b` eats "No thanks" / "No thank you".
 const DONE_RE =
   /^\s*(no thank you|no thanks?|thank you|thanks|nothing else|nothing|nope|that(’|'| i)?s (it|all|everything)|no)\b/i;
@@ -124,10 +127,10 @@ const VISITOR_RE =
   /\b(visitor|guest|here to see|here for|is here|coming up|send (him|her|them) up|has arrived|arrived|lobby|front desk|downstairs|to visit|stopping by|wants? to (come|go) up|let (him|her|them) (up|in))\b|\bha(?:ve|s)\b.*\bhere\b/i;
 /** Explicit "another / someone else" — always a fresh arrival, never prior-guest notes. */
 const NEW_OR_OTHER_VISITOR_RE =
-  /\b(another|someone else|somebody else|different (guest|visitor|person)|new (guest|visitor)|also (have|got)|one more|second (guest|visitor))\b/i;
-/** Arrival framing: "I have a guest…", "visitor in the lobby…" — not bare downstairs/parking. */
+  /\b(?:another (?:guest|visitor|person)|someone else|somebody else|different (?:guest|visitor|person)|new (?:guest|visitor)|also (?:have|got)\s+(?:an?\s+)?(?:guest|visitor|someone|somebody)|one more (?:guest|visitor|person)|second (?:guest|visitor))\b/i;
+/** Arrival framing: "I have a guest…", "visitor in the lobby…" — not bare location / "question about the guest". */
 const ARRIVAL_FRAMING_RE =
-  /\b(?:(?:i have|i'?ve got|we have|there is|there'?s)\b[\s\w',-]{0,40}\b(?:visitor|guest|someone|somebody)|(?:visitor|guest)\b[\s\w',-]{0,32}\b(?:lobby|front desk|downstairs|waiting|arrived|here)|in the lobby|at the front desk)\b/i;
+  /\b(?:(?:i have|i'?ve got|we have|there is|there'?s)\s+(?:an?\s+)?(?:(?:another|other|new|second)\s+)?(?:visitor|guest|someone|somebody)\b|(?:visitor|guest)\b[\s\w',-]{0,32}\b(?:lobby|front desk|downstairs|waiting|arrived|here))\b/i;
 /** Permission / access questions about a named guest (answered from guest_info). */
 const PERMISSION_TOPIC_RE =
   /\b(allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|unit|condo|key|fob|elevator|amenity)\b/i;
@@ -150,7 +153,7 @@ const NAME_PART =
 const NAME = `${NAME_PART}(?:\\s+${NAME_PART}){0,3}`;
 const NAME_PATTERNS: RegExp[] = [
   new RegExp(
-    `(?:i have|i've got|we have|there is|there's)\\s+(?:an?\\s+)?(?:visitor|guest)?\\s*(?:named|called|name is)?\\s*(${NAME})\\s+(?:here|in the lobby|at the front desk|downstairs|for you|to see|waiting)`,
+    `(?:i (?:also )?have|i've got|we have|there is|there's)\\s+(?:an?\\s+)?(?:visitor|guest)?\\s*(?:named|called|name is)?\\s*(${NAME})\\s+(?:here|in the lobby|at the front desk|downstairs|for you|to see|waiting)`,
     "i"
   ),
   new RegExp(
@@ -389,6 +392,14 @@ export function isPureDoneUtterance(utterance: string): boolean {
   if (!u || !DONE_RE.test(u)) return false;
   const remainder = u.replace(DONE_LEAD_RE, "").replace(/^[,.\s]+/, "").trim();
   return remainder.length === 0;
+}
+
+/** True for bare goodbyes, pure done/no-thanks, or whole-turn hold idioms. */
+function isSoftCloseUtterance(utterance: string): boolean {
+  const u = utterance.trim();
+  return (
+    GOODBYE_RE.test(u) || isPureDoneUtterance(u) || HOLD_ONLY_RE.test(u)
+  );
 }
 
 function truncateNotes(info: string, max = 120): string {
@@ -840,7 +851,7 @@ async function handleOfferTransfer(
   state: CallState
 ): Promise<CallflowResult> {
   const u = utterance.trim();
-  if (GOODBYE_RE.test(u) || isPureDoneUtterance(u)) return softClose(state);
+  if (isSoftCloseUtterance(u)) return softClose(state);
 
   // Decline / negation — never transfer; peel off a continued question if any.
   if (hasTransferNegation(u) || (NO_RE.test(u) && !detectOfferSelection(u))) {
@@ -1003,7 +1014,7 @@ export async function step(
     }
 
     case "INTENT": {
-      if (GOODBYE_RE.test(utterance) || isPureDoneUtterance(utterance)) {
+      if (isSoftCloseUtterance(utterance)) {
         // Soft close — do not send hangup; the human ends the call.
         return softClose(state);
       }
@@ -1018,7 +1029,7 @@ export async function step(
     }
 
     case "ASK_NAME": {
-      if (GOODBYE_RE.test(utterance) || isPureDoneUtterance(utterance)) {
+      if (isSoftCloseUtterance(utterance)) {
         return softClose(state);
       }
       // Clear refusal to connect — never treat as a guest name / no-match transfer.
@@ -1054,18 +1065,14 @@ export async function step(
 
     case "HOLDING": {
       // Legacy ack-hold phase — transfers are immediate now, unless refused.
-      if (
-        GOODBYE_RE.test(utterance) ||
-        isPureDoneUtterance(utterance) ||
-        hasTransferNegation(utterance)
-      ) {
+      if (isSoftCloseUtterance(utterance) || hasTransferNegation(utterance)) {
         return handleTransferDecline(utterance, deps, state);
       }
       return transferIfAvailable("scott", deps, state);
     }
 
     case "TAKE_MESSAGE": {
-      if (!utterance || isPureDoneUtterance(utterance) || GOODBYE_RE.test(utterance)) {
+      if (!utterance || isSoftCloseUtterance(utterance)) {
         // No message body — soft close; human ends the call.
         return {
           reply:
@@ -1115,7 +1122,7 @@ export async function step(
 
     case "CONFIRM_MESSAGE": {
       // Caller finished the message — save/notify once, keep listening (no hangup).
-      if (!utterance || isPureDoneUtterance(utterance) || GOODBYE_RE.test(utterance)) {
+      if (!utterance || isSoftCloseUtterance(utterance)) {
         return finalizeTakenMessage(state);
       }
 
@@ -1136,10 +1143,11 @@ export async function step(
         };
       }
 
-      // Continued guest question / connect request after leaving a message:
+      // Continued guest question / new arrival / connect after leaving a message:
       // finalize the message once, then handle the new intent without hangup.
       if (
         looksLikeGuestInfoFollowUp(utterance, state) ||
+        looksLikeNewVisitorAnnouncement(utterance, state) ||
         detectExplicitTransfer(utterance) ||
         (VISITOR_RE.test(utterance) && extractName(utterance))
       ) {
