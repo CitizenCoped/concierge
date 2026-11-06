@@ -244,32 +244,42 @@ States & behavior:
    the spoken fallback greeting only fires on an empty/greeting-only first
    utterance.)*
 2. **INTENT**: classify the concierge's utterance:
+   - explicit "connect me to Scott/Monica" → TRANSFER (or ask which); never
+     treat as approval or hangup. Only route to a target whose phone env var
+     is set — never silently remap Monica → Scott.
    - visitor announcement → ASK_NAME (or extract name directly if spoken)
-   - permission / access question naming an **active** guest with non-empty
-     `guest_info` → narrow LLM step answers strictly from those notes
-     (`yes`/`no`/`unclear` + short spoken reply). Fire `guest.info_answered`.
-     On `unclear`, empty notes, inactive/unknown guest, or LLM timeout/error
-     (~2.5s) → fall through to TRANSFER. Never invent permissions; never
-     answer for someone not on the active list.
-   - anything else (package, maintenance, question for Scott/Monica) →
-     TRANSFER
+   - permission / access question about a named **or previously identified**
+     active guest → answer strictly from `guest_info` via AI Gateway
+     (`yes`/`no`/`unclear`). Fire `guest.info_answered` on yes/no. On
+     `unclear`, empty notes, or LLM timeout/error (~2.5s) → **OFFER_TRANSFER**
+     (tell the human you're not sure; ask if they want Scott or Monica). Do
+     **not** auto-transfer on ambiguous follow-ups. Never invent permissions;
+     never answer for someone not on the active list.
+   - anything else (package, maintenance, etc.) → TRANSFER
    *(Implementation notes from live testing: STT sometimes delivers dangling
    fragments — e.g. "I have a " — as complete turns; INTENT asks for
-   clarification up to twice before failing safe to TRANSFER. A name
-   auto-extracted from an announcement is best-effort: on a match it admits,
-   but on a miss it re-asks for the name explicitly (ASK_NAME) rather than
-   denying — a deny can only follow a name the concierge stated explicitly.
-   Visitor-arrival flow is unchanged and takes priority over Guest Info Q&A.)*
+   clarification up to twice before failing safe. A name auto-extracted from
+   an announcement is best-effort: on a match it admits, but on a miss it
+   re-asks (ASK_NAME) rather than denying. Visitor-arrival takes priority
+   over Guest Info Q&A. **Do not hang up after approval** — keep listening;
+   store `activeGuest` on the call for pronoun follow-ups like "Can she
+   park…?". Soft-close on goodbye without `hangup: true`; the human ends the
+   call. AgentPhone ends the call only when we send `hangup`/`action:"hangup"`
+   or after `maxSilenceMs` of silence.)*
 3. **ASK_NAME → MATCH**: run the guest matcher (active list loaded once per
    call; phonetic Soundex + Levenshtein, admit only on exactly one candidate).
    - Exactly one active match → say "Yes — {name} is expected. It's okay to
-     send them up. Thank you!"; fire `guest.admitted`; mark outcome
-     `guest_admitted`; `hangup: true` after confirmation.
+     send them up. Anything else I can help with?"; fire `guest.admitted`;
+     mark outcome `guest_admitted`; **stay on INTENT with `activeGuest` —
+     do not hang up**.
    - Partial/single-token miss → re-ask once for first and last name before
      denying.
    - No/ambiguous match after that → say "I don't see them on the approved
      list. Connecting you to Scott or Monica now."; fire `guest.denied`; →
-     TRANSFER.
+     TRANSFER (fail-closed; unchanged).
+3b. **OFFER_TRANSFER**: after an uncertain Guest Info answer. Yes → ask
+    Scott or Monica; name → TRANSFER if configured; No → return to INTENT
+    listening. Continued questions re-enter INTENT with `activeGuest` kept.
 4. **TRANSFER**:
    - Choose target: Scott first (`SCOTT_PHONE`); allow "is Monica available?"
      style requests to select Monica (`MONICA_PHONE`). `SCOTT_PHONE` is the

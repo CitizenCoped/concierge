@@ -131,9 +131,11 @@ or delete the file; GitHub Pages settings stay as they are.
    admit but never deny — on a miss the AI re-asks for the name explicitly;
    denials only follow an explicitly stated name. Partial/single-token replies
    in ASK_NAME re-ask once for first+last before denying. STT fragments
-   ("I have a ") get up to two clarification re-asks, then fail safe to a
-   transfer. Matching is phonetic+fuzzy (Soundex + Levenshtein) and admits
-   only on exactly one active candidate.
+   ("I have a ") get up to two clarification re-asks, then offer a transfer.
+   Matching is phonetic+fuzzy (Soundex + Levenshtein) and admits only on
+   exactly one active candidate. **Approval is not terminal** — no
+   `hangup` after admit; `activeGuest` is kept for follow-ups answered from
+   `guest_info`. Uncertain notes → offer Scott/Monica (no blind transfer).
 5. **Event catalog additions:** `transfer.request` (legacy ack-hold title;
    no longer emitted on the hot path), `guest.info_answered` ("ℹ️ Guest Info
    Answered"), and `system.test` ("🔔 Test Notification"). Original catalog

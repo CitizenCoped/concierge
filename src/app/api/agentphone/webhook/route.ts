@@ -148,6 +148,10 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         const deps = {
           matchGuest: async (name: string) => matchGuestAgainst(name, snapshot),
           answerGuestInfo: answerFromGuestInfo,
+          transferAvailable: {
+            scott: Boolean(process.env.SCOTT_PHONE?.trim()),
+            monica: Boolean(process.env.MONICA_PHONE?.trim()),
+          },
         };
 
         // Peek: only fill dead air when a guest lookup or notes Q&A is likely.
@@ -162,10 +166,14 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         }
 
         result = await step(state, utterance, deps);
-        // Persist the snapshot on every turn so later turns skip the DB round-trip.
+        // Persist the snapshot (and activeGuest from the state machine) across turns.
         result = {
           ...result,
-          nextState: { ...result.nextState, guestSnapshot: snapshot },
+          nextState: {
+            ...result.nextState,
+            guestSnapshot: snapshot,
+            activeGuest: result.nextState.activeGuest ?? state.activeGuest,
+          },
         };
 
         if (result.action === "transfer") {
