@@ -3,9 +3,12 @@ import {
   INITIAL_STATE,
   cleanSpokenName,
   detectExplicitTransfer,
+  detectOfferSelection,
   extractName,
   extractQuestionGuestName,
+  hasTransferNegation,
   isPartialName,
+  looksLikeGuestInfoFollowUp,
   looksLikeGuestPermissionQuestion,
   step,
   transferFailedResult,
@@ -438,6 +441,18 @@ describe("Monica / Scott transfer availability", () => {
     expect(detectExplicitTransfer("Jane is here")).toBeNull();
   });
 
+  it("negated connect requests are not transfers", () => {
+    expect(hasTransferNegation("No, don't connect me to Monica")).toBe(true);
+    expect(detectExplicitTransfer("No, don't connect me to Monica")).toBeNull();
+    expect(detectExplicitTransfer("Don't transfer me to Scott")).toBeNull();
+    expect(
+      detectOfferSelection("No thanks, can she still use the garage?")
+    ).toBeNull();
+    expect(
+      detectExplicitTransfer("Did Monica leave any instructions for her?")
+    ).toBeNull();
+  });
+
   it("Monica request without MONICA_PHONE does not silently use Scott", async () => {
     const r = transferIfAvailable("monica", {
       matchGuest: async () => ({ match: null, candidates: [] }),
@@ -458,6 +473,169 @@ describe("Monica / Scott transfer availability", () => {
     );
     expect(r.action).toBe("transfer");
     expect(r.transferTarget).toBe("monica");
+  });
+
+  it("resident mention in a guest question is not a transfer", async () => {
+    const jane = guest(
+      "Jane McDaniel",
+      "Housekeeper. Monica left instructions to use the service elevator."
+    );
+    const deps = depsWith(async () => ({ match: jane, candidates: [jane] }), {
+      answerGuestInfo: async () => ({
+        answer: "answered",
+        reply:
+          "Monica left instructions for Jane McDaniel to use the service elevator.",
+      }),
+    });
+    const r = await step(
+      {
+        phase: "INTENT",
+        activeGuest: {
+          id: jane.id,
+          name: jane.name,
+          guest_info: jane.guest_info,
+        },
+      },
+      "Did Monica leave any instructions for her?",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(notifyEvents(r.effects)).toContain("guest.info_answered");
+  });
+});
+
+describe("offer negation and continued questions", () => {
+  const janeNotes =
+    "Jane may use the garage. Expected around 3pm. Leave packages at the door.";
+  const jane = guest("Jane McDaniel", janeNotes);
+
+  it("decline with continued garage question does not transfer", async () => {
+    const deps = depsWith(async () => ({ match: jane, candidates: [jane] }), {
+      answerGuestInfo: async () => ({
+        answer: "yes",
+        reply: "Yes, Jane McDaniel may use the garage.",
+      }),
+    });
+    const r = await step(
+      {
+        phase: "OFFER_TRANSFER",
+        activeGuest: {
+          id: jane.id,
+          name: jane.name,
+          guest_info: janeNotes,
+        },
+      },
+      "No thanks, can she still use the garage?",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(r.nextState.phase).toBe("INTENT");
+    expect(r.reply.toLowerCase()).toMatch(/garage|yes/);
+  });
+
+  it("don't connect me to Monica declines without transferring", async () => {
+    const r = await step(
+      {
+        phase: "OFFER_TRANSFER",
+        activeGuest: { id: jane.id, name: jane.name, guest_info: janeNotes },
+      },
+      "No, don't connect me to Monica",
+      depsWith(async () => ({ match: jane, candidates: [jane] }))
+    );
+    expect(r.action).toBeUndefined();
+    expect(r.nextState.phase).toBe("INTENT");
+  });
+});
+
+describe("factual Guest Info follow-ups", () => {
+  const janeNotes =
+    "Housekeeper. Expected around 3pm. Special instructions: leave packages at the unit door. Allowed underground parking.";
+  const jane = guest("Jane McDaniel", janeNotes);
+
+  it("answers expected-time / instructions / delivery from notes", async () => {
+    expect(
+      looksLikeGuestInfoFollowUp("What time is she expected?", {
+        phase: "INTENT",
+        activeGuest: { id: jane.id, name: jane.name, guest_info: janeNotes },
+      })
+    ).toBe(true);
+    expect(
+      looksLikeGuestInfoFollowUp("What should I tell her?", {
+        phase: "INTENT",
+        activeGuest: { id: jane.id, name: jane.name, guest_info: janeNotes },
+      })
+    ).toBe(true);
+    // Without activeGuest, a bare pronoun question is not Guest Info routing
+    // (and must not mis-extract filler words like "time" as a guest name).
+    expect(extractQuestionGuestName("What time is she expected?")).toBeNull();
+    expect(looksLikeGuestPermissionQuestion("What time is she expected?")).toBe(
+      false
+    );
+
+    const deps = depsWith(async () => ({ match: jane, candidates: [jane] }), {
+      answerGuestInfo: async (input) => {
+        if (/time|expected/i.test(input.question)) {
+          return {
+            answer: "answered",
+            reply: "Jane McDaniel is expected around 3pm.",
+          };
+        }
+        if (/tell|instructions/i.test(input.question)) {
+          return {
+            answer: "answered",
+            reply:
+              "Special instructions for Jane McDaniel: leave packages at the unit door.",
+          };
+        }
+        return {
+          answer: "answered",
+          reply: "Leave deliveries for Jane McDaniel at the unit door.",
+        };
+      },
+    });
+    const state = {
+      phase: "INTENT" as const,
+      activeGuest: {
+        id: jane.id,
+        name: jane.name,
+        guest_info: janeNotes,
+      },
+    };
+    const t = await step(state, "What time is she expected?", deps);
+    expect(t.action).toBeUndefined();
+    expect(t.reply).toMatch(/3\s*pm/i);
+    expect(notifyEvents(t.effects)).toContain("guest.info_answered");
+
+    const i = await step(state, "What should I tell her?", deps);
+    expect(i.action).toBeUndefined();
+    expect(i.reply.toLowerCase()).toMatch(/package|door|instructions/);
+
+    const d = await step(state, "Where should the delivery be left?", deps);
+    expect(d.action).toBeUndefined();
+    expect(d.reply.toLowerCase()).toMatch(/door|deliver/);
+  });
+
+  it("factual question missing from notes offers transfer, not blind transfer", async () => {
+    const deps = depsWith(async () => ({ match: jane, candidates: [jane] }), {
+      answerGuestInfo: async () => ({
+        answer: "unclear",
+        reply: "Notes don't say.",
+      }),
+    });
+    const r = await step(
+      {
+        phase: "INTENT",
+        activeGuest: {
+          id: jane.id,
+          name: jane.name,
+          guest_info: janeNotes,
+        },
+      },
+      "Does she have a gate code?",
+      deps
+    );
+    expect(r.action).toBeUndefined();
+    expect(r.nextState.phase).toBe("OFFER_TRANSFER");
   });
 });
 
@@ -599,7 +777,7 @@ describe("callflow", () => {
     expect(outcomeOf(r.effects)).toBe("error");
   });
 
-  it("failed transfer falls back to message taking, then stores the message", async () => {
+  it("failed transfer → message → keeps listening without hangup", async () => {
     const denied = await step({ phase: "ASK_NAME" }, "Nobody Realname", noMatch);
     const fallback = transferFailedResult(denied);
     expect(fallback.nextState.phase).toBe("TAKE_MESSAGE");
@@ -613,8 +791,65 @@ describe("callflow", () => {
     expect(took.nextState.phase).toBe("CONFIRM_MESSAGE");
 
     const done = await step(took.nextState, "No, that's all", noMatch);
-    expect(done.action).toBe("hangup");
+    expect(done.action).toBeUndefined();
+    expect(done.action).not.toBe("hangup");
     expect(outcomeOf(done.effects)).toBe("message_taken");
+    expect(done.nextState.phase).toBe("INTENT");
+    expect(done.nextState.messageSaved).toBe(true);
+    // Second close must not re-save / re-notify.
+    const again = await step(done.nextState, "Goodbye", noMatch);
+    expect(again.effects.filter((e) => e.type === "saveMessage")).toHaveLength(0);
+    expect(notifyEvents(again.effects)).not.toContain("message.taken");
+  });
+
+  it("approval → transfer fail → message → another guest question (no hangup, save once)", async () => {
+    const jane = guest(
+      "Jane McDaniel",
+      "Allowed underground parking. Expected 3pm."
+    );
+    const deps = depsWith(async () => ({ match: jane, candidates: [jane] }), {
+      answerGuestInfo: async () => ({
+        answer: "yes",
+        reply: "Yes, Jane McDaniel has underground parking access.",
+      }),
+    });
+    const admitted = await step(
+      { phase: "INTENT" },
+      "Jane McDaniel is here to see Scott",
+      deps
+    );
+    expect(admitted.action).toBeUndefined();
+
+    const wantTransfer = await step(
+      admitted.nextState,
+      "Connect me to Scott please",
+      deps
+    );
+    expect(wantTransfer.action).toBe("transfer");
+
+    const failed = transferFailedResult(wantTransfer);
+    expect(failed.nextState.phase).toBe("TAKE_MESSAGE");
+    expect(failed.nextState.activeGuest?.name).toBe("Jane McDaniel");
+
+    const took = await step(
+      failed.nextState,
+      "Please have Scott call the desk",
+      deps
+    );
+    const followUp = await step(
+      took.nextState,
+      "Can she still park in the garage?",
+      deps
+    );
+    expect(followUp.action).toBeUndefined();
+    expect(followUp.action).not.toBe("hangup");
+    expect(notifyEvents(followUp.effects)).toContain("message.taken");
+    expect(notifyEvents(followUp.effects)).toContain("guest.info_answered");
+    expect(
+      followUp.effects.filter((e) => e.type === "saveMessage")
+    ).toHaveLength(1);
+    expect(followUp.nextState.messageSaved).toBe(true);
+    expect(followUp.reply.toLowerCase()).toMatch(/parking|garage/);
   });
 
   it("regression: extracts the name from 'It is a test visitor' phrasing", async () => {

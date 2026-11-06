@@ -47,6 +47,8 @@ export interface CallState {
   guestSnapshot?: Array<{ id: string; name: string; guest_info?: string | null }>;
   /** Last identified guest on this call — used for pronoun follow-ups. */
   activeGuest?: ActiveGuest;
+  /** True after a failed-transfer message was saved+notified once. */
+  messageSaved?: boolean;
 }
 
 export const INITIAL_STATE: CallState = { phase: "GREETING" };
@@ -63,7 +65,7 @@ export interface GuestInfoQaInput {
 }
 
 export interface GuestInfoQaResult {
-  answer: "yes" | "no" | "unclear";
+  answer: "yes" | "no" | "unclear" | "answered";
   reply: string;
 }
 
@@ -116,6 +118,11 @@ const PRONOUN_GUEST_RE =
   /\b(she|he|they|her|him|them|this (guest|visitor|person)|the (guest|visitor|person))\b/i;
 const CONNECT_INTENT_RE =
   /\b(connect|transfer|put me through|put us through|speak (to|with)|talk (to|with)|get (scott|monica|them|him|her) on|call (scott|monica))\b/i;
+/** Factual / instruction follow-ups answered from Guest Info (not only access). */
+const FACTUAL_FOLLOWUP_RE =
+  /\b(what time|expected|arriv(?:e|ing|al)|tell (her|him|them)|special instructions?|instructions?|where (should|to|do)|delivery|deliver|leave (it|the|a)|package for|notes?|anything (i should|else)|who (is|are) (she|he|they)|purpose|here for)\b/i;
+const TRANSFER_NEGATION_RE =
+  /\b((do\s*n[o’']?t|does\s*n[o’']?t|did\s*n[o’']?t|never)\b.{0,40}\b(connect|transfer|put me|put us|call|ring)\b|\bno\b[,.]?\s+(thanks?|thank you)?[,.]?\s*((do\s*n[o’']?t|does\s*n[o’']?t)\s+)?(connect|transfer|put)|(?:don'?t|do not)\s+(connect|transfer)\s+me\s+to\s+(scott|monica)|no[,.]?.{0,24}(connect|transfer).{0,16}(scott|monica))/i;
 
 // Name tokens only — no periods/location words — so
 // "Sarah Connor. Is she allowed…" and "John Smith here in the lobby" stay clean.
@@ -147,7 +154,7 @@ const TRAILING_CLAUSE_RE =
 // Words that can never be a visitor's name (STT phrasing debris — a real call
 // once captured "here" as the name and wrongly denied the guest).
 const NON_NAME_RE =
-  /^(a|an|the|for|to|is|it|someone|somebody|here|there|them|him|her|she|he|they|his|hers|their|theirs|you|visitor|guest|waiting|lobby)$/i;
+  /^(a|an|the|for|to|is|it|someone|somebody|here|there|them|him|her|she|he|they|his|hers|their|theirs|you|visitor|guest|waiting|lobby|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|anything|something|scott|monica)$/i;
 
 function plausibleName(candidate: string | undefined): string | null {
   const c = candidate?.trim().replace(/^(an?|the)\s+/i, "");
@@ -200,45 +207,101 @@ export function isPartialName(name: string): boolean {
 
 const QUESTION_NAME_PATTERNS: RegExp[] = [
   new RegExp(
-    `\\b(?:is|are|was|were|can|could|may|does|do|did|has|have)\\s+(${NAME})\\s+(?:allowed|permitted|able|authorized|welcome|ok|okay|cleared|have|get|use|park|enter|access)`,
+    `\\b(?:is|are|was|were|can|could|may|does|do|did|has|have)\\s+(${NAME})\\s+(?:allowed|permitted|able|authorized|welcome|ok|okay|cleared|have|get|use|park|enter|access|any|special|expected)`,
     "i"
   ),
   new RegExp(`\\b(?:does|can)\\s+(${NAME})\\s+have\\b`, "i"),
-  new RegExp(`\\b(${NAME})\\s+(?:allowed|permitted|authorized)\\b`, "i"),
+  new RegExp(`\\b(${NAME})\\s+(?:allowed|permitted|authorized|expected)\\b`, "i"),
   new RegExp(
     `\\b(?:for|about|regarding)\\s+(${NAME})(?:\\s|$|[.?!,])`,
     "i"
   ),
+  new RegExp(
+    `\\b(?:what time|when|where)\\s+(?:is|should|does|do|can)\\s+(${NAME})\\b`,
+    "i"
+  ),
+  new RegExp(
+    `\\b(?:what|how)\\s+(?:should I|do I|to)\\s+(?:tell|leave|give)\\s+(?:for\\s+)?(${NAME})\\b`,
+    "i"
+  ),
 ];
 
-/** Pull a guest name out of a permission-style question. */
+/** Guest-name candidates from questions — reject STT/grammar filler tokens. */
+function plausibleQuestionGuestName(candidate: string | undefined): string | null {
+  const name = plausibleName(candidate);
+  if (!name) return null;
+  const parts = name.split(/\s+/);
+  if (
+    parts.some((p) =>
+      /^(what|when|where|how|who|why|is|are|was|were|she|he|they|her|him|them|this|that|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|scott|monica)$/i.test(
+        p
+      )
+    )
+  ) {
+    return null;
+  }
+  return name;
+}
+
+/** Pull a guest name out of a Guest Info follow-up question. */
 export function extractQuestionGuestName(utterance: string): string | null {
   const u = utterance.trim();
   for (const re of QUESTION_NAME_PATTERNS) {
-    const name = plausibleName(cleanSpokenName(u.match(re)?.[1] ?? ""));
+    const name = plausibleQuestionGuestName(cleanSpokenName(u.match(re)?.[1] ?? ""));
     if (name) return name;
   }
   return null;
 }
 
+/** @deprecated Use looksLikeGuestInfoFollowUp — kept as alias for older tests. */
 export function looksLikeGuestPermissionQuestion(utterance: string): boolean {
+  return looksLikeGuestInfoFollowUp(utterance, undefined);
+}
+
+/**
+ * Whether this utterance should be answered from Guest Info notes (permissions
+ * OR factual/instruction follow-ups), rather than an unsolicited transfer.
+ */
+export function looksLikeGuestInfoFollowUp(
+  utterance: string,
+  state?: CallState
+): boolean {
   const u = utterance.trim();
   if (!u) return false;
-  const hasPermissionShape =
-    QUESTION_SHAPE_RE.test(u) || PERMISSION_TOPIC_RE.test(u);
-  if (!hasPermissionShape) return false;
-  // Pure visitor arrivals stay on the admit path — unless this is clearly a
-  // permission/access question. "downstairs" alone is in VISITOR_RE and must
-  // not steal "Can she park downstairs?" away from Guest Info follow-ups.
+
+  const hasGuestContext =
+    Boolean(state?.activeGuest) || Boolean(extractQuestionGuestName(u));
+  const infoSeeking =
+    /\?/.test(u) ||
+    QUESTION_SHAPE_RE.test(u) ||
+    PERMISSION_TOPIC_RE.test(u) ||
+    FACTUAL_FOLLOWUP_RE.test(u) ||
+    PRONOUN_GUEST_RE.test(u);
+
+  if (!infoSeeking) return false;
+
+  // Pure visitor arrivals ("I have a guest here") stay on the admit path.
   if (
     VISITOR_RE.test(u) &&
     !PACKAGE_RE.test(u) &&
     !PERMISSION_TOPIC_RE.test(u) &&
-    !PRONOUN_GUEST_RE.test(u)
+    !FACTUAL_FOLLOWUP_RE.test(u) &&
+    !PRONOUN_GUEST_RE.test(u) &&
+    !extractQuestionGuestName(u)
   ) {
     return false;
   }
-  return true;
+
+  // With an identified guest (this turn or earlier), any info-seeking follow-up
+  // goes to notes — the model returns unclear if notes don't cover it.
+  // Without a guest name/activeGuest, do NOT treat generic unit/parking chatter
+  // as Guest Info (that would swallow "Is Monica available? … unit" transfers).
+  return hasGuestContext;
+}
+
+/** True when the speaker is declining / negating a transfer. */
+export function hasTransferNegation(utterance: string): boolean {
+  return TRANSFER_NEGATION_RE.test(utterance.trim());
 }
 
 function truncateNotes(info: string, max = 120): string {
@@ -256,6 +319,7 @@ function withGuest(state: CallState | undefined, guest?: ActiveGuest): CallState
     phase: "INTENT",
     activeGuest: guest ?? state?.activeGuest,
     guestSnapshot: state?.guestSnapshot,
+    messageSaved: state?.messageSaved,
   };
 }
 
@@ -376,6 +440,16 @@ export function transferIfAvailable(
 export function detectExplicitTransfer(utterance: string): TransferTarget | "ask" | null {
   const u = utterance.trim();
   if (!u) return null;
+  // Negated requests are never consent to connect.
+  if (hasTransferNegation(u)) return null;
+  // Questions about a resident ("Did Monica leave instructions?") are not transfers.
+  if (
+    /\?/.test(u) &&
+    !CONNECT_INTENT_RE.test(u) &&
+    !/\b(still )?(be )?connected\b/i.test(u)
+  ) {
+    return null;
+  }
   const wantsConnect =
     CONNECT_INTENT_RE.test(u) ||
     /\b(still )?(be )?connected\b/i.test(u) ||
@@ -387,6 +461,53 @@ export function detectExplicitTransfer(utterance: string): TransferTarget | "ask
   if (monica && !scott) return "monica";
   if (scott && monica) return "ask";
   return "ask";
+}
+
+/**
+ * In OFFER_TRANSFER, detect a clear target selection — not a continued question
+ * or a mere mention of a resident's name.
+ */
+export function detectOfferSelection(utterance: string): TransferTarget | "ask" | null {
+  const u = utterance.trim();
+  if (!u) return null;
+  if (hasTransferNegation(u)) return null;
+  // Continued questions are not selections.
+  if (
+    /\?/.test(u) ||
+    /^(did|does|do|is|are|was|were|what|when|where|how|can|could|should|may)\b/i.test(
+      u
+    )
+  ) {
+    return null;
+  }
+  const scott = SCOTT_RE.test(u);
+  const monica = MONICA_RE.test(u);
+  // Bare name or short affirmative pick: "Scott", "Monica please", "Yes, Scott"
+  if (/^\s*(yes|yeah|yep|sure|ok|okay)[,.]?\s+/i.test(u) || YES_RE.test(u)) {
+    if (scott && !monica) return "scott";
+    if (monica && !scott) return "monica";
+    if (!scott && !monica) return "ask";
+    return "ask";
+  }
+  if (/^\s*scott\b/i.test(u) && !monica) return "scott";
+  if (/^\s*monica\b/i.test(u) && !scott) return "monica";
+  // "Connect me to Scott" while offer pending
+  return detectExplicitTransfer(u);
+}
+
+/** Strip a leading decline so a continued question can be handled. */
+export function stripDeclineLead(utterance: string): string {
+  return utterance
+    .trim()
+    .replace(
+      /^\s*(no|nope|nah|no thanks?|not now|never ?mind)[,.]?\s*/i,
+      ""
+    )
+    .replace(
+      /^\s*((do\s*n[o’']?t|does\s*n[o’']?t)\s+(connect|transfer)[^.?!,]*)[,.]?\s*/i,
+      ""
+    )
+    .trim();
 }
 
 async function matchAndRespond(
@@ -493,7 +614,7 @@ async function tryGuestInfoAnswer(
   deps: CallflowDeps,
   state?: CallState
 ): Promise<CallflowResult | null> {
-  if (!looksLikeGuestPermissionQuestion(utterance)) return null;
+  if (!looksLikeGuestInfoFollowUp(utterance, state)) return null;
 
   let guest: ActiveGuest | null = null;
   const spokenName = extractQuestionGuestName(utterance);
@@ -508,10 +629,7 @@ async function tryGuestInfoAnswer(
         state
       );
     }
-  } else if (
-    state?.activeGuest &&
-    (PRONOUN_GUEST_RE.test(utterance) || PERMISSION_TOPIC_RE.test(utterance))
-  ) {
+  } else if (state?.activeGuest) {
     guest = state.activeGuest;
   } else {
     return null;
@@ -579,7 +697,19 @@ async function handleOfferTransfer(
   const u = utterance.trim();
   if (GOODBYE_RE.test(u)) return softClose(state);
 
-  if (NO_RE.test(u) && !CONNECT_INTENT_RE.test(u) && !SCOTT_RE.test(u) && !MONICA_RE.test(u)) {
+  // Decline / negation — never transfer; peel off a continued question if any.
+  if (hasTransferNegation(u) || (NO_RE.test(u) && !detectOfferSelection(u))) {
+    const remainder = stripDeclineLead(u);
+    if (
+      remainder &&
+      remainder.toLowerCase() !== u.toLowerCase() &&
+      (looksLikeGuestInfoFollowUp(remainder, state) ||
+        detectExplicitTransfer(remainder) ||
+        VISITOR_RE.test(remainder) ||
+        PACKAGE_RE.test(remainder))
+    ) {
+      return handleIntent(remainder, deps, { ...state, phase: "INTENT" });
+    }
     return {
       reply: "No problem — anything else I can help with?",
       nextState: withGuest(state),
@@ -587,34 +717,21 @@ async function handleOfferTransfer(
     };
   }
 
-  if (MONICA_RE.test(u) && !SCOTT_RE.test(u)) {
-    return transferIfAvailable("monica", deps, state);
-  }
-  if (SCOTT_RE.test(u) && !MONICA_RE.test(u)) {
-    return transferIfAvailable("scott", deps, state);
-  }
-  if (SCOTT_RE.test(u) && MONICA_RE.test(u)) {
+  const pick = detectOfferSelection(u);
+  if (pick === "ask") {
     return {
       reply: "Who would you like — Scott or Monica?",
       nextState: {
         phase: "OFFER_TRANSFER",
         activeGuest: state.activeGuest,
         guestSnapshot: state.guestSnapshot,
+        messageSaved: state.messageSaved,
       },
       effects: [],
     };
   }
-
-  if (YES_RE.test(u)) {
-    return {
-      reply: "Who would you like — Scott or Monica?",
-      nextState: {
-        phase: "OFFER_TRANSFER",
-        activeGuest: state.activeGuest,
-        guestSnapshot: state.guestSnapshot,
-      },
-      effects: [],
-    };
+  if (pick === "scott" || pick === "monica") {
+    return transferIfAvailable(pick, deps, state);
   }
 
   // Continued question / other intent while an offer is pending.
@@ -651,12 +768,28 @@ async function handleIntent(
         phase: "OFFER_TRANSFER",
         activeGuest: state?.activeGuest,
         guestSnapshot: state?.guestSnapshot,
+        messageSaved: state?.messageSaved,
       },
       effects: [],
     };
   }
   if (explicit === "scott" || explicit === "monica") {
     return transferIfAvailable(explicit, deps, state);
+  }
+
+  // Direct "Is Monica available?" / package-for-Monica — only when this is not
+  // a Guest Info question about a guest. Resident mentions inside guest
+  // questions ("Did Monica leave instructions?") must not transfer.
+  if (
+    MONICA_RE.test(utterance) &&
+    !SCOTT_RE.test(utterance) &&
+    !hasTransferNegation(utterance) &&
+    !looksLikeGuestInfoFollowUp(utterance, state) &&
+    (CONNECT_INTENT_RE.test(utterance) ||
+      /\bis monica available\b/i.test(utterance) ||
+      /\b(question|package|delivery|maintenance)\b/i.test(utterance))
+  ) {
+    return transferIfAvailable("monica", deps, state);
   }
 
   // Visitor arrivals with an extractable name take priority over Guest Info
@@ -666,25 +799,24 @@ async function handleIntent(
     if (name) {
       return matchAndRespond(name, deps, { denyOnMiss: false, state });
     }
-    // No name yet: ask for it unless this is a pronoun/permission follow-up
-    // about a guest we already identified on this call.
-    if (!(state?.activeGuest && looksLikeGuestPermissionQuestion(utterance))) {
+    // No name yet: ask for it unless this is a Guest Info follow-up about a
+    // guest we already identified on this call.
+    if (!(state?.activeGuest && looksLikeGuestInfoFollowUp(utterance, state))) {
       return {
         reply: "Of course — what's the visitor's name?",
-        nextState: { phase: "ASK_NAME", activeGuest: state?.activeGuest },
+        nextState: {
+          phase: "ASK_NAME",
+          activeGuest: state?.activeGuest,
+          messageSaved: state?.messageSaved,
+        },
         effects: [],
       };
     }
   }
 
-  // Permission / access follow-ups (incl. "Can she park downstairs?").
+  // Guest Info follow-ups (permissions + factual/instruction questions).
   const fromNotes = await tryGuestInfoAnswer(utterance, deps, state);
   if (fromNotes) return fromNotes;
-
-  // Generic "is Monica available?" without connect verbs still routes to Monica.
-  if (MONICA_RE.test(utterance) && !SCOTT_RE.test(utterance)) {
-    return transferIfAvailable("monica", deps, state);
-  }
 
   return transferIfAvailable("scott", deps, state);
 }
@@ -764,12 +896,11 @@ export async function step(
 
     case "TAKE_MESSAGE": {
       if (!utterance || DONE_RE.test(utterance) || GOODBYE_RE.test(utterance)) {
+        // No message body — soft close; human ends the call.
         return {
           reply:
-            "No problem — I'll let Scott and Monica know you called. Thank you! Goodbye.",
-          nextState: { phase: "DONE", activeGuest: state.activeGuest },
-          // Message-taking end of a failed-transfer path may hang up.
-          action: "hangup",
+            "No problem — I'll let Scott and Monica know you called. I'm here if you need anything else.",
+          nextState: withGuest(state),
           effects: [],
         };
       }
@@ -779,36 +910,42 @@ export async function step(
           phase: "CONFIRM_MESSAGE",
           messageParts: [...(state.messageParts ?? []), utterance],
           activeGuest: state.activeGuest,
+          messageSaved: state.messageSaved,
         },
         effects: [],
       };
     }
 
     case "CONFIRM_MESSAGE": {
+      // Caller finished the message — save/notify once, keep listening (no hangup).
       if (!utterance || DONE_RE.test(utterance) || GOODBYE_RE.test(utterance)) {
-        const body = (state.messageParts ?? []).join(" ");
+        return finalizeTakenMessage(state);
+      }
+
+      // Continued guest question / connect request after leaving a message:
+      // finalize the message once, then handle the new intent without hangup.
+      if (
+        looksLikeGuestInfoFollowUp(utterance, state) ||
+        detectExplicitTransfer(utterance) ||
+        (VISITOR_RE.test(utterance) && extractName(utterance))
+      ) {
+        const finalized = finalizeTakenMessage(state, {
+          keepListeningPrompt: false,
+        });
+        const next = await handleIntent(utterance, deps, finalized.nextState);
         return {
-          reply:
-            "Thank you — I'll pass that along to Scott and Monica right away. Goodbye!",
-          nextState: { phase: "DONE", activeGuest: state.activeGuest },
-          action: "hangup",
-          effects: [
-            { type: "saveMessage", body },
-            {
-              type: "notify",
-              event: "message.taken",
-              message: `Message From Concierge = ${body}`,
-            },
-            { type: "outcome", outcome: "message_taken" },
-          ],
+          ...next,
+          effects: [...finalized.effects, ...next.effects],
         };
       }
+
       return {
         reply: "Got it. Anything else?",
         nextState: {
           phase: "CONFIRM_MESSAGE",
           messageParts: [...(state.messageParts ?? []), utterance],
           activeGuest: state.activeGuest,
+          messageSaved: state.messageSaved,
         },
         effects: [],
       };
@@ -818,6 +955,43 @@ export async function step(
       // Stay soft — if the call somehow continues, don't force another hangup.
       return softClose(state);
   }
+}
+
+/** Save+notify a taken message exactly once, then return to listening. */
+function finalizeTakenMessage(
+  state: CallState,
+  opts: { keepListeningPrompt?: boolean } = {}
+): CallflowResult {
+  const keepPrompt = opts.keepListeningPrompt !== false;
+  const body = (state.messageParts ?? []).join(" ").trim();
+  if (state.messageSaved || !body) {
+    return {
+      reply: keepPrompt
+        ? "Okay — I'm here if you need anything else."
+        : "",
+      nextState: withGuest({ ...state, messageSaved: true, messageParts: [] }),
+      effects: [],
+    };
+  }
+  return {
+    reply: keepPrompt
+      ? "Thank you — I'll pass that along to Scott and Monica. I'm here if you need anything else."
+      : "",
+    nextState: withGuest({
+      ...state,
+      messageSaved: true,
+      messageParts: [],
+    }),
+    effects: [
+      { type: "saveMessage", body },
+      {
+        type: "notify",
+        event: "message.taken",
+        message: `Message From Concierge = ${body}`,
+      },
+      { type: "outcome", outcome: "message_taken" },
+    ],
+  };
 }
 
 /** Applied by the route when a transfer can't complete (PATCH failed):

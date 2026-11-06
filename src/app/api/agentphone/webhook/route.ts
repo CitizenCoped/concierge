@@ -158,7 +158,7 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         const maybeLookup =
           state.phase === "ASK_NAME" ||
           ((state.phase === "GREETING" || state.phase === "INTENT") &&
-            /\b(visitor|guest|here|lobby|name|allowed|park|garage|access)\b/i.test(
+            /\b(visitor|guest|here|lobby|name|allowed|park|garage|access|expected|instructions?|delivery|tell (her|him|them))\b/i.test(
               utterance
             ));
         if (maybeLookup) {
@@ -166,13 +166,15 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
         }
 
         result = await step(state, utterance, deps);
-        // Persist the snapshot (and activeGuest from the state machine) across turns.
+        // Persist snapshot / activeGuest / messageSaved across turns.
         result = {
           ...result,
           nextState: {
             ...result.nextState,
             guestSnapshot: snapshot,
             activeGuest: result.nextState.activeGuest ?? state.activeGuest,
+            messageSaved:
+              result.nextState.messageSaved ?? state.messageSaved,
           },
         };
 
@@ -187,7 +189,14 @@ function handleVoiceMessage(payload: WebhookPayload): Response {
             result = transferFailedResult(result, "patch_failed");
             result = {
               ...result,
-              nextState: { ...result.nextState, guestSnapshot: snapshot },
+              nextState: {
+                ...result.nextState,
+                guestSnapshot: snapshot,
+                activeGuest:
+                  result.nextState.activeGuest ?? state.activeGuest,
+                messageSaved:
+                  result.nextState.messageSaved ?? state.messageSaved,
+              },
             };
             write({ text: result.reply });
           }
