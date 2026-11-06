@@ -767,18 +767,54 @@ describe("security: new/unnamed visitor must not reuse prior activeGuest", () =>
       )
     ).toBe(true);
     expect(
+      looksLikeNewVisitorAnnouncement(
+        "Someone is downstairs, can they come up?",
+        state
+      )
+    ).toBe(true);
+    expect(
+      looksLikeNewVisitorAnnouncement("Got a visitor, can he come up?", state)
+    ).toBe(true);
+    expect(
+      looksLikeNewVisitorAnnouncement(
+        "I have a delivery here, can they come up?",
+        state
+      )
+    ).toBe(true);
+    expect(
       looksLikeGuestInfoFollowUp(
         "I also have someone else here, can he come up?",
         state
       )
     ).toBe(false);
-    // Legitimate same-guest follow-up
-    expect(
-      looksLikeNewVisitorAnnouncement("Can she still use the garage?", state)
-    ).toBe(false);
-    expect(
-      looksLikeGuestInfoFollowUp("Can she still use the garage?", state)
-    ).toBe(true);
+    // Legitimate same-guest follow-ups — must NOT clear
+    for (const u of [
+      "Can she still use the garage?",
+      "She's in the lobby, can she park?",
+      "Can she come up one more time?",
+      "I also have a question about parking",
+      "I also have her parking pass",
+    ]) {
+      expect(looksLikeNewVisitorAnnouncement(u, state), u).toBe(false);
+      expect(looksLikeGuestInfoFollowUp(u, state), u).toBe(true);
+    }
+  });
+
+  it("Hold on + guest question answers notes; bare hold soft-closes", async () => {
+    const { admitted, deps } = await admitJane();
+    const holdQ = await step(
+      admitted.nextState,
+      "Hold on, can she still use the garage?",
+      deps
+    );
+    expect(holdQ.action).toBeUndefined();
+    expect(notifyEvents(holdQ.effects)).toContain("guest.info_answered");
+    expect(holdQ.nextState.activeGuest?.name).toBe("Jane McDaniel");
+
+    const bare = await step(admitted.nextState, "hold on", deps);
+    expect(bare.action).toBeUndefined();
+    expect(notifyEvents(bare.effects)).not.toContain("guest.info_answered");
+    expect(bare.reply.toLowerCase()).toMatch(/here if you need/);
   });
 
   it("after Jane admit, unnamed other visitor asks access → ASK_NAME, no Jane notes", async () => {

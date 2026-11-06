@@ -205,3 +205,110 @@ describe("webhook persistence boundary — activeGuest clear", () => {
     expect(stored.activeGuest?.name).toBe("Jane McDaniel");
   });
 });
+
+describe("same-guest continuity vs indefinite arrival (persist boundary)", () => {
+  async function afterJaneAdmit(): Promise<CallState> {
+    const prev: CallState = { ...INITIAL_STATE, phase: "INTENT" };
+    const admitted = await step(
+      prev,
+      "Jane McDaniel is here to see Scott",
+      deps()
+    );
+    return serializeCallState(
+      mergePersistedCallState(admitted.nextState, prev, snapshot)
+    );
+  }
+
+  it("keeps Jane for lobby status / one more time / hold+question across persist", async () => {
+    let stored = await afterJaneAdmit();
+    for (const u of [
+      "She's in the lobby, can she park?",
+      "Can she come up one more time?",
+      "Hold on, can she still use the garage?",
+      "I also have a question about parking",
+    ]) {
+      let notes = 0;
+      const r = await step(
+        stored,
+        u,
+        deps(async () => {
+          notes += 1;
+          return {
+            answer: "yes",
+            reply: "Yes, Jane McDaniel has underground parking access.",
+          };
+        })
+      );
+      expect(notes, u).toBe(1);
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+      stored = serializeCallState(
+        mergePersistedCallState(r.nextState, stored, snapshot)
+      );
+      expect(stored.activeGuest?.name, u).toBe("Jane McDaniel");
+    }
+  });
+
+  it("indefinite arrivals clear Jane through persist and next turn", async () => {
+    for (const u of [
+      "Someone is downstairs, can they come up?",
+      "Got a visitor, can he come up?",
+      "I have a delivery here, can they come up?",
+    ]) {
+      const stored = await afterJaneAdmit();
+      let notes = 0;
+      const ask = await step(
+        stored,
+        u,
+        deps(async () => {
+          notes += 1;
+          return { answer: "yes", reply: "should not run" };
+        })
+      );
+      expect(notes, u).toBe(0);
+      expect(ask.nextState.phase, u).toBe("ASK_NAME");
+      expect(ask.nextState.activeGuest, u).toBeNull();
+
+      const persisted = serializeCallState(
+        mergePersistedCallState(ask.nextState, stored, snapshot)
+      );
+      expect(persisted.activeGuest, u).toBeUndefined();
+
+      const follow = await step(
+        persisted,
+        "Can he park in the garage?",
+        deps(async () => {
+          notes += 1;
+          return { answer: "yes", reply: "should not run" };
+        })
+      );
+      expect(notes, u).toBe(0);
+      expect(notifyEvents(follow.effects), u).not.toContain("guest.info_answered");
+    }
+  });
+
+  it("CONFIRM_MESSAGE new visitor clears guest after finalize+persist", async () => {
+    const withMsg: CallState = {
+      ...janeState(),
+      phase: "CONFIRM_MESSAGE",
+      messageParts: ["Please call about the package"],
+    };
+    let notes = 0;
+    const r = await step(
+      withMsg,
+      "Got a visitor, can he come up?",
+      deps(async () => {
+        notes += 1;
+        return { answer: "yes", reply: "should not run" };
+      })
+    );
+    expect(notes).toBe(0);
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeNull();
+    expect(notifyEvents(r.effects)).toContain("message.taken");
+
+    const persisted = serializeCallState(
+      mergePersistedCallState(r.nextState, withMsg, snapshot)
+    );
+    expect(persisted.activeGuest).toBeUndefined();
+  });
+});

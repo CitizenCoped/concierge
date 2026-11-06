@@ -259,9 +259,11 @@ function plausibleQuestionGuestName(candidate: string | undefined): string | nul
   const name = plausibleName(candidate);
   if (!name) return null;
   const parts = name.split(/\s+/);
+  // Reject STT/grammar debris ("question about", "parking", …) so we fall
+  // through to activeGuest instead of treating filler as a missing guest.
   if (
     parts.some((p) =>
-      /^(what|when|where|how|who|why|is|are|was|were|she|he|they|her|him|them|this|that|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|scott|monica)$/i.test(
+      /^(what|when|where|how|who|why|is|are|was|were|she|he|they|her|him|them|this|that|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|question|about|regarding|also|pass|one|more|still|just|please|thanks?|scott|monica)$/i.test(
         p
       )
     )
@@ -287,9 +289,65 @@ export function looksLikeGuestPermissionQuestion(utterance: string): boolean {
 }
 
 /**
+ * Same known guest continuity (pronoun / "the guest" / possessives) — keep notes.
+ * Must run before arrival heuristics so lobby status and repeats do not clear.
+ */
+function looksLikeSameGuestContinuity(
+  utterance: string,
+  state?: CallState
+): boolean {
+  if (!state?.activeGuest) return false;
+  const u = utterance.trim();
+  if (NEW_OR_OTHER_VISITOR_RE.test(u)) return false;
+  // Indefinite new person / fresh "a visitor" is not the known guest.
+  if (
+    /\b(someone|somebody)\b/i.test(u) ||
+    /\b(?:got|have)\s+(?:a\s+)?visitor\b/i.test(u) ||
+    /\b(?:a|an|another|new)\s+(?:guest|visitor)\b/i.test(u)
+  ) {
+    return false;
+  }
+  // "She's in the lobby…", "can she park?", "I also have her pass"
+  if (/\b(she|her)\b/i.test(u)) return true;
+  // "question about the/this guest" referring to the identified person
+  if (/\b(?:the|this)\s+(?:guest|visitor)\b/i.test(u)) return true;
+  return false;
+}
+
+/**
+ * Unnamed person at the door who needs identification (fail closed).
+ * Covers "Someone is downstairs…", "Got a visitor…", delivery-with-person access.
+ */
+function looksLikeIndefiniteUnnamedArrival(utterance: string): boolean {
+  const u = utterance.trim();
+  if (!u) return false;
+  // Non-greedy span — do not let intermediate words swallow the location token.
+  if (
+    /\b(someone|somebody)\b[\w\s,',-]{0,48}\b(downstairs|lobby|front desk|waiting|arrived|outside|door|here)\b/i.test(
+      u
+    )
+  ) {
+    return true;
+  }
+  if (/\b(?:got|have)\s+(?:a\s+)?visitor\b/i.test(u)) return true;
+  // Delivery/person at door asking to come up / be let in — not a leave-package note.
+  if (
+    /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:a\s+)?(?:delivery|package|parcel)\s+here\b/i.test(
+      u
+    ) &&
+    /\b(come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|can they|can he|can she)\b/i.test(
+      u
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Fresh visitor announcement (possibly different/unnamed) — must not reuse a
- * prior activeGuest's notes for access answers. Same-guest pronoun follow-ups
- * like "Can she park?" lack arrival framing and return false.
+ * prior activeGuest's notes for access answers. Same-guest pronoun / lobby
+ * status / repeat questions return false and keep notes.
  */
 export function looksLikeNewVisitorAnnouncement(
   utterance: string,
@@ -299,38 +357,22 @@ export function looksLikeNewVisitorAnnouncement(
   if (!u) return false;
 
   if (NEW_OR_OTHER_VISITOR_RE.test(u)) return true;
+  if (looksLikeIndefiniteUnnamedArrival(u)) return true;
 
-  // Need visitor/arrival context — pure "can she park downstairs?" is a follow-up.
+  // Known-guest continuity wins over lobby / "I have…" heuristics.
+  if (looksLikeSameGuestContinuity(u, state)) return false;
+
   const arrival = ARRIVAL_FRAMING_RE.test(u);
-  const visitorish = VISITOR_RE.test(u);
-  if (!arrival && !visitorish) return false;
 
-  // Package-only desk chatter without guest/visitor words is not a visitor arrival.
-  if (
-    PACKAGE_RE.test(u) &&
-    !/\b(visitor|guest)\b/i.test(u) &&
-    !NEW_OR_OTHER_VISITOR_RE.test(u)
-  ) {
-    return false;
-  }
+  // Named person in an arrival announcement.
+  if (arrival && extractName(u)) return true;
 
-  // Named arrival (this turn) is a match path, not prior-guest notes.
-  if (extractName(u)) return true;
+  // Unnamed desk announcement ("I have a guest here…", "visitor in the lobby…").
+  if (arrival && !extractQuestionGuestName(u)) return true;
 
-  // Unnamed desk announcement ("I have a guest here…", "visitor in the lobby…")
-  // even when an access/parking question is tacked on.
-  if (arrival && !extractQuestionGuestName(u)) {
-    return true;
-  }
-
-  // Visitor-shaped with no name: treat as arrival needing identification.
-  // With an activeGuest, require real arrival framing so "park downstairs"
-  // (VISITOR_RE hits "downstairs") does not clear the known guest.
-  if (visitorish && !extractName(u) && !extractQuestionGuestName(u)) {
-    if (state?.activeGuest && !arrival) return false;
-    return true;
-  }
-
+  // Bare VISITOR_RE hits (word "guest"/"downstairs" alone) are NOT enough —
+  // that swallowed message dictation ("call about guest A") and same-guest
+  // location follow-ups. Require real arrival framing or indefinite person.
   return false;
 }
 
@@ -1107,6 +1149,20 @@ export async function step(
           },
           effects: [],
         };
+      }
+      // Guest follow-up / new unnamed arrival / connect — not message body.
+      // Require a real new-visitor signal or an activeGuest notes question —
+      // do not divert on a lone "guest" word inside dictated message text.
+      if (
+        looksLikeNewVisitorAnnouncement(utterance, state) ||
+        detectExplicitTransfer(utterance) ||
+        (state.activeGuest && looksLikeGuestInfoFollowUp(utterance, state)) ||
+        (VISITOR_RE.test(utterance) && extractName(utterance))
+      ) {
+        return handleIntent(utterance, deps, {
+          ...state,
+          phase: "INTENT",
+        });
       }
       return {
         reply: "Got it. Anything else?",
