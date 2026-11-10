@@ -2300,6 +2300,7 @@ describe("delivery approval (reserved Delivery list entry)", () => {
       "Takeout's here",
       "There's takeout downstairs",
       "There's food downstairs, can they come up?",
+      "There's food at the front desk",
     ]) {
       const r = await step({ phase: "INTENT" }, u, deliveryDeps());
       expect(outcomeOf(r.effects), u).toBe("guest_admitted");

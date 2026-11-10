@@ -43,17 +43,25 @@ const DELIVERY_COURIER_RE =
 const DELIVERY_INTRO_RE =
   /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:a\s+)?delivery\b/i;
 
+/** Presence locations bound to a food noun (subset of arrival cues). */
+const FOOD_LOCATION =
+  "here|downstairs|outside|waiting|arrived|at the door|at the front desk|in the lobby|lobby";
+
 /**
  * Takeout/food/groceries announced at a location without needing the word
  * "delivery" — "Takeout is here", "Takeout's here", "There's food downstairs".
  * Location must be attached to the food noun (not a distant "can she" elsewhere).
  */
-const FOOD_AT_LOCATION_RE =
-  /\b(?:take[\s-]?out|food|grocer(?:y|ies))(?:'s|\s+is|\s+are)\s+(?:here|downstairs|outside|waiting|arrived|at the door|in the lobby)\b/i;
+const FOOD_AT_LOCATION_RE = new RegExp(
+  `\\b(?:take[\\s-]?out|food|grocer(?:y|ies))(?:'s|\\s+is|\\s+are)\\s+(?:${FOOD_LOCATION})\\b`,
+  "i"
+);
 
 /** "There's takeout downstairs" / "I have food here" — location near the food. */
-const HAVE_FOOD_ARRIVAL_RE =
-  /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:an?\s+)?(?:take[\s-]?out|food|grocer(?:y|ies))\b(?:\s+\w+){0,4}\s+(?:here|downstairs|outside|waiting|arrived|at the door|in the lobby)\b/i;
+const HAVE_FOOD_ARRIVAL_RE = new RegExp(
+  `\\b(?:i have|i'?ve got|we have|there'?s|there is|got)\\s+(?:an?\\s+)?(?:take[\\s-]?out|food|grocer(?:y|ies))\\b(?:\\s+\\w+){0,4}\\s+(?:${FOOD_LOCATION})\\b`,
+  "i"
+);
 
 const ARRIVAL_OR_ACCESS_RE =
   /\b(?:here|downstairs|lobby|outside|waiting|arrived|at the door|at the front desk|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|can they|can he|can she)\b/i;
