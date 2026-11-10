@@ -46,7 +46,7 @@ describe("delivery identity", () => {
 });
 
 describe("looksLikeDeliveryTypeArrival", () => {
-  it("detects food/courier arrivals", () => {
+  it("detects food/courier arrivals with presence/access cues", () => {
     for (const u of [
       "There's a DoorDash downstairs",
       "Uber Eats is here",
@@ -57,13 +57,21 @@ describe("looksLikeDeliveryTypeArrival", () => {
       "I have a delivery person here, can they come up?",
       "it's a delivery",
       "Delivery",
+      "yes, a delivery",
+      "Yeah it's a delivery",
     ]) {
       expect(looksLikeDeliveryTypeArrival(u), u).toBe(true);
     }
   });
 
-  it("does not treat package-for-named-guest as Delivery arrival", () => {
+  it("does not treat bare food/brand chatter as a delivery arrival", () => {
     for (const u of [
+      "DoorDash",
+      "take out",
+      "groceries",
+      "food delivery",
+      "Notes mention DoorDash preferred",
+      "They ordered takeout earlier",
       "I have a package for Jane",
       "We have a delivery for Jane",
       "I have a question for Jane",

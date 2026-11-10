@@ -26,9 +26,13 @@ export function isDeliveryListName(name: string): boolean {
   return normalizeDeliveryToken(name) === "delivery";
 }
 
-/** Food / courier service cues — high-confidence Delivery-list arrival. */
-const FOOD_SERVICE_RE =
-  /\b(?:door\s*dash|doordash|uber\s*eats|ubereats|instacart|grub\s*hub|grubhub|postmates|take[\s-]?out|food\s+delivery|grocer(?:y|ies)(?:\s+delivery)?|meal\s+kit)\b/i;
+/** Courier brands — never enough alone; need arrival/access framing. */
+const FOOD_BRAND_RE =
+  /\b(?:door\s*dash|doordash|uber\s*eats|ubereats|instacart|grub\s*hub|grubhub|postmates)\b/i;
+
+/** Explicit food/courier delivery phrases (still require arrival/access). */
+const FOOD_DELIVERY_PHRASE_RE =
+  /\b(?:food\s+delivery|grocer(?:y|ies)\s+delivery|take[\s-]?out\s+delivery|meal\s+kit(?:\s+delivery)?)\b/i;
 
 const FOOD_OR_GROCERIES_RE = /\b(?:food|groceries|grocery|take[\s-]?out)\b/i;
 
@@ -51,29 +55,77 @@ const PACKAGE_FOR_NAMED_RE =
   /\b(?:package|parcel|delivery|question)\s+for\s+(?!delivery\b)(?!the\b|a\b|an\b|you\b|us\b|them\b|him\b|her\b|me\b|scott\b|monica\b|unit\b|condo\b)[A-Za-z]/i;
 
 /**
+ * Clarify-reply confirmations: bare "Delivery", "it's a delivery",
+ * "yes, a delivery" — used after we asked delivery-vs-visitor.
+ */
+export function looksLikeDeliveryClarifyReply(utterance: string): boolean {
+  const u = utterance.trim();
+  if (!u) return false;
+  if (/^\s*(?:it'?s\s+)?(?:a\s+)?delivery[.!,?\s]*$/i.test(u)) return true;
+  if (
+    /^\s*(?:yes|yeah|yep|yup|correct|right)[,.]?\s+(?:it'?s\s+)?(?:a\s+)?delivery[.!,?\s]*$/i.test(
+      u
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^\s*(?:yes|yeah|yep|yup)[,.]?\s+(?:it'?s\s+)?(?:a\s+)?delivery\b/i.test(u)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Clarify-reply picking visitor (not delivery). */
+export function looksLikeVisitorClarifyReply(utterance: string): boolean {
+  const u = utterance.trim();
+  if (!u) return false;
+  if (looksLikeDeliveryClarifyReply(u)) return false;
+  if (/^\s*(?:a\s+)?(?:visitor|guest)[.!,?\s]*$/i.test(u)) return true;
+  if (
+    /^\s*(?:yes|yeah|yep|yup|correct|right|it'?s)[,.]?\s+(?:a\s+)?(?:visitor|guest)[.!,?\s]*$/i.test(
+      u
+    )
+  ) {
+    return true;
+  }
+  if (/^\s*(?:someone new|somebody new|a person)[.!,?\s]*$/i.test(u)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * High-confidence food/courier delivery arrival — match the Delivery list
  * entry rather than asking for the courier's personal name.
+ *
+ * Fail closed: food/brand/grocery words alone never approve — require
+ * arrival/access framing (or an explicit clarify reply).
  */
 export function looksLikeDeliveryTypeArrival(utterance: string): boolean {
   const u = utterance.trim();
   if (!u) return false;
   if (PACKAGE_FOR_NAMED_RE.test(u)) return false;
 
-  if (FOOD_SERVICE_RE.test(u)) return true;
+  // After "delivery or visitor?" — accept terse delivery confirmations.
+  if (looksLikeDeliveryClarifyReply(u)) return true;
+
+  const hasArrival = ARRIVAL_OR_ACCESS_RE.test(u);
+  if (!hasArrival) return false;
+
+  if (FOOD_BRAND_RE.test(u) || FOOD_DELIVERY_PHRASE_RE.test(u)) return true;
   if (FOOD_OR_GROCERIES_RE.test(u) && /\bdeliver/i.test(u)) return true;
   if (
     FOOD_OR_GROCERIES_RE.test(u) &&
-    ARRIVAL_OR_ACCESS_RE.test(u) &&
     /\b(?:delivery|delivering|delivered|courier|doordash|uber|instacart)\b/i.test(
       u
     )
   ) {
     return true;
   }
-  if (DELIVERY_COURIER_RE.test(u) && ARRIVAL_OR_ACCESS_RE.test(u)) return true;
-  if (DELIVERY_INTRO_RE.test(u) && ARRIVAL_OR_ACCESS_RE.test(u)) return true;
-  // Bare "Delivery" / "it's a delivery" after a clarify ask.
-  if (/^\s*(?:it'?s\s+)?(?:a\s+)?delivery[.!,?\s]*$/i.test(u)) return true;
+  if (DELIVERY_COURIER_RE.test(u)) return true;
+  if (DELIVERY_INTRO_RE.test(u)) return true;
   return false;
 }
 
@@ -91,7 +143,13 @@ export function isAmbiguousDeliveryOrVisitor(utterance: string): boolean {
   }
   const hasDeliveryWord = /\bdeliver(?:y|ies|ing)?\b/i.test(u);
   if (!hasDeliveryWord) return false;
-  if (FOOD_SERVICE_RE.test(u) || FOOD_OR_GROCERIES_RE.test(u)) return false;
+  if (
+    FOOD_BRAND_RE.test(u) ||
+    FOOD_DELIVERY_PHRASE_RE.test(u) ||
+    FOOD_OR_GROCERIES_RE.test(u)
+  ) {
+    return false;
+  }
   if (DELIVERY_COURIER_RE.test(u) && ARRIVAL_OR_ACCESS_RE.test(u)) {
     return hasVisitorPersonFraming(u);
   }

@@ -135,6 +135,13 @@ describe("classifyDeskSubject", () => {
     }
   });
 
+  it("bare food/brand chatter is not a delivery arrival", () => {
+    for (const u of ["DoorDash", "take out", "Notes mention food delivery"]) {
+      expect(classifyDeskSubject(u, jane).kind, u).not.toBe("delivery_arrival");
+      expect(classifyDeskSubject(u, null).kind, u).not.toBe("delivery_arrival");
+    }
+  });
+
   it("clarify_delivery: visitor framing + delivery without food-service cue", () => {
     expect(
       classifyDeskSubject(

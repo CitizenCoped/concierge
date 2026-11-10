@@ -2236,8 +2236,77 @@ describe("delivery approval (reserved Delivery list entry)", () => {
       expect(outcomeOf(r.effects), u).not.toBe("guest_admitted");
       expect(notifyEvents(r.effects), u).not.toContain("guest.admitted");
       expect(r.reply.toLowerCase(), u).toMatch(/delivery.*visitor|visitor.*delivery/);
-      expect(r.nextState.phase, u).toBe("INTENT");
+      expect(r.nextState.phase, u).toBe("CLARIFY_DELIVERY");
     }
+  });
+
+  it("CLARIFY_DELIVERY: delivery confirm approves; visitor asks for name", async () => {
+    const deps = deliveryDeps();
+    const ask = await step(
+      { phase: "INTENT" },
+      "I have a visitor with a delivery, can they come up?",
+      deps
+    );
+    expect(ask.nextState.phase).toBe("CLARIFY_DELIVERY");
+
+    const del = await step(ask.nextState, "yes, a delivery", deps);
+    expect(outcomeOf(del.effects)).toBe("guest_admitted");
+    expect(del.nextState.activeGuest?.name).toBe("Delivery");
+    expect(del.reply).toMatch(/305/);
+
+    const ask2 = await step(
+      { phase: "INTENT", activeGuest: jane },
+      "Someone is here with a delivery for you",
+      deps
+    );
+    const vis = await step(ask2.nextState, "visitor", deps);
+    expect(outcomeOf(vis.effects)).not.toBe("guest_admitted");
+    expect(vis.nextState.phase).toBe("ASK_NAME");
+    expect(vis.nextState.activeGuest).toBeNull();
+    expect(vis.action).toBeUndefined();
+  });
+
+  it("Monica + food delivery does not steal to Monica transfer", async () => {
+    const r = await step(
+      { phase: "INTENT" },
+      "There's a DoorDash delivery downstairs for Monica",
+      deliveryDeps()
+    );
+    expect(r.action).toBeUndefined();
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
+    expect(r.nextState.activeGuest?.name).toBe("Delivery");
+    expect(r.reply).toMatch(/305/);
+  });
+
+  it("bare food/brand chatter without arrival does not approve", async () => {
+    for (const u of [
+      "DoorDash",
+      "take out",
+      "Notes mention food delivery",
+      "They ordered groceries earlier",
+    ]) {
+      const r = await step({ phase: "INTENT" }, u, deliveryDeps());
+      expect(outcomeOf(r.effects), u).not.toBe("guest_admitted");
+      expect(notifyEvents(r.effects), u).not.toContain("guest.admitted");
+      expect(r.nextState.activeGuest?.name, u).not.toBe("Delivery");
+    }
+  });
+
+  it("yes-a-delivery in CLARIFY_SUBJECT does not reuse prior named guest", async () => {
+    const deps = deliveryDeps();
+    const clarify = await step(
+      {
+        phase: "CLARIFY_SUBJECT",
+        activeGuest: { id: jane.id, name: jane.name, guest_info: jane.guest_info },
+        pendingUtterance: "He's downstairs, can he come up?",
+      },
+      "yes, a delivery",
+      deps
+    );
+    expect(outcomeOf(clarify.effects)).toBe("guest_admitted");
+    expect(clarify.nextState.activeGuest?.name).toBe("Delivery");
+    expect(clarify.reply).toMatch(/305/);
+    expect(clarify.reply.toLowerCase()).not.toMatch(/jane/);
   });
 
   it("saying Delivery as the guest name admits when entry is active", async () => {
