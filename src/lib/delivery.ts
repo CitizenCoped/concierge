@@ -43,9 +43,12 @@ const DELIVERY_COURIER_RE =
 const DELIVERY_INTRO_RE =
   /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:a\s+)?delivery\b/i;
 
-/** Presence locations bound to a food noun (subset of arrival cues). */
+/**
+ * Presence locations bound to a food noun (subset of arrival cues).
+ * Prefer phrases over bare "lobby" — "food for the lobby" must not admit.
+ */
 const FOOD_LOCATION =
-  "here|downstairs|outside|waiting|arrived|at the door|at the front desk|in the lobby|lobby";
+  "here|downstairs|outside|waiting|arrived|at the door|at the front desk|in the lobby";
 
 /**
  * Takeout/food/groceries announced at a location without needing the word

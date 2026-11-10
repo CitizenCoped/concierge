@@ -91,6 +91,8 @@ describe("looksLikeDeliveryTypeArrival", () => {
       "I have food notes for her, can she come up?",
       "We have food for Jane downstairs",
       "Can she come up? I also have a question about food",
+      "I have food for the lobby",
+      "There's food for the unit lobby",
     ]) {
       expect(looksLikeDeliveryTypeArrival(u), u).toBe(false);
     }
