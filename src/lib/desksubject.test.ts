@@ -220,6 +220,15 @@ describe("classifyDeskSubject", () => {
     expect(
       classifyDeskSubject("Can this guest outside come up?", jane).kind
     ).toBe("clarify");
+    expect(
+      classifyDeskSubject("Can the guest upstairs come up?", jane).kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("Can our guest inside come up?", jane).kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("Can the guest there come up?", jane).kind
+    ).toBe("clarify");
   });
 
   it("visitor parking compound is not a new person", () => {

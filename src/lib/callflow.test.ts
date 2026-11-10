@@ -1715,6 +1715,9 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       "Can the guest downstairs come up?",
       "Can our guest here come up?",
       "Can this guest outside come up?",
+      "Can the guest upstairs come up?",
+      "Can our guest inside come up?",
+      "Can the guest there come up?",
     ]) {
       let answeredFromNotes = false;
       const guarded = {

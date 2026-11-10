@@ -87,10 +87,20 @@ const ENTITY_AT_LOCATION_RE = new RegExp(
 
 const INDEFINITE_SOMEONE_RE = /\b(?:someone|somebody)\b/i;
 
-// Keep in sync with LOCATION_RE for here/arrived — otherwise deictic+here
- // turns skip clarify (not isInfoSeeking) and fall through to unrelated note reuse.
-const ACCESS_OR_INFO_RE =
-  /\?|\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|downstairs|lobby|front desk|door|outside|waiting|arrived|here)\b/i;
+/**
+ * Shared location lexicon — used by LOCATION_RE, ACCESS_OR_INFO_RE, and
+ * access-name location-tail stripping so deictic+location never drifts into
+ * same_guest note reuse (e.g. upstairs/inside/there after name cleanup).
+ */
+const LOCATION_SINGLE_TOKENS =
+  "downstairs|upstairs|lobby|outside|inside|waiting|arrived|here|there|door";
+const LOCATION_PHRASE_TOKENS = "front desk|at the door";
+const LOCATION_TOKENS = `${LOCATION_SINGLE_TOKENS}|${LOCATION_PHRASE_TOKENS}`;
+
+const ACCESS_OR_INFO_RE = new RegExp(
+  `\\?|\\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|${LOCATION_TOKENS})\\b`,
+  "i"
+);
 
 const SAME_PRONOUN_RE = /\b(?:she|her)\b/i;
 const OTHER_PRONOUN_RE = /\b(?:he|him|they|them)\b/i;
@@ -99,8 +109,7 @@ const DEICTIC_GUEST_RE = new RegExp(
   `\\b(?:${DEICTIC_DET})\\s+(?:guest|visitor)\\b`,
   "i"
 );
-const LOCATION_RE =
-  /\b(?:downstairs|lobby|front desk|at the door|outside|waiting|arrived|here)\b/i;
+const LOCATION_RE = new RegExp(`\\b(?:${LOCATION_TOKENS})\\b`, "i");
 
 /**
  * Unambiguous identity match for reusing activeGuest.
@@ -155,8 +164,10 @@ const ACCESS_NAME_TRAILING_FILLER_RE =
   /^(please|still|just|now|also|again|yet|too|really|already)$/i;
 
 /** Location tails greedily captured in "can the guest downstairs come up?". */
-const ACCESS_NAME_LOCATION_TAIL_RE =
-  /^(downstairs|upstairs|here|there|outside|inside|lobby|waiting|arrived)$/i;
+const ACCESS_NAME_LOCATION_TAIL_RE = new RegExp(
+  `^(?:${LOCATION_SINGLE_TOKENS})$`,
+  "i"
+);
 
 /**
  * Normalize a captured access-name span: strip trailing fillers/locations.
