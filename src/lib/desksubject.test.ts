@@ -36,6 +36,11 @@ describe("classifyDeskSubject", () => {
       classifyDeskSubject("Is Jane allowed in the garage?", jane, {
         spokenName: "Jane",
       }).kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("Is Jane McDaniel allowed in the garage?", jane, {
+        spokenName: "Jane McDaniel",
+      }).kind
     ).toBe("same_guest");
     expect(
       classifyDeskSubject("I also have a question about the guest", jane).kind
@@ -206,13 +211,13 @@ describe("classifyDeskSubject", () => {
     ).toBe("new_arrival");
   });
 
-  it("same guest: access name with trailing filler, not a conflicting surname", () => {
+  it("first-name-only access clarifies; full name with filler is same_guest", () => {
     expect(
       classifyDeskSubject("Can Jane please come up?", jane).kind
-    ).toBe("same_guest");
+    ).toBe("clarify");
     expect(
       classifyDeskSubject("Can Jane still come up?", jane).kind
-    ).toBe("same_guest");
+    ).toBe("clarify");
     expect(
       classifyDeskSubject("Can Jane McDaniel please come up?", jane).kind
     ).toBe("same_guest");
@@ -224,11 +229,11 @@ describe("classifyDeskSubject", () => {
     expect(classifyDeskSubject("Can An Nguyen come up?", an).kind).toBe(
       "same_guest"
     );
-    expect(classifyDeskSubject("Can An come up?", an).kind).toBe("same_guest");
+    expect(classifyDeskSubject("Can An come up?", an).kind).toBe("clarify");
     expect(classifyDeskSubject("Can My Tran come up?", my).kind).toBe(
       "same_guest"
     );
-    expect(classifyDeskSubject("Can My come up?", my).kind).toBe("same_guest");
+    expect(classifyDeskSubject("Can My come up?", my).kind).toBe("clarify");
   });
 
   it("same guest: deictic can the/our guest come up (not a new arrival)", () => {
@@ -299,6 +304,34 @@ describe("classifyDeskSubject", () => {
         jane
       ).kind
     ).toBe("new_arrival");
+  });
+
+  it("article guest parking amenity with she/her keeps notes", () => {
+    expect(
+      classifyDeskSubject("Does she have a guest parking?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Does she have a guest parking pass?", jane).kind
+    ).toBe("same_guest");
+  });
+
+  it("calendar date of phrases are not companion new arrivals", () => {
+    expect(
+      classifyDeskSubject("What is her date of birth?", jane).kind
+    ).toBe("same_guest");
+    expect(classifyDeskSubject("date of arrival?", jane).kind).not.toBe(
+      "new_arrival"
+    );
+  });
+
+  it("role/vendor here with she/her is new_arrival (not Jane notes)", () => {
+    for (const u of [
+      "Housekeeper here, can she come up?",
+      "The housekeeper is here, can she come up?",
+      "Nanny here, can she come up?",
+    ]) {
+      expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
+    }
   });
 
   it("possessive boyfriend/nanny/kids companions are new_arrival", () => {

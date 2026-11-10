@@ -1694,6 +1694,45 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
+  it("clarify reply naming her husband does not reuse Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    const clarified = await step(
+      admitted.nextState,
+      "He's downstairs, can he come up?",
+      {
+        ...deps,
+        answerGuestInfo: async () => {
+          throw new Error("should not answer from notes on clarify enter");
+        },
+      }
+    );
+    expect(clarified.nextState.phase).toBe("CLARIFY_SUBJECT");
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      matchGuest: async () => ({ match: null, candidates: [] }),
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
+    for (const u of [
+      "it's her husband",
+      "no, her husband",
+      "Jane's husband",
+      "her friend",
+    ]) {
+      answeredFromNotes = false;
+      const r = await step(clarified.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(
+        ["ASK_NAME", "CLARIFY_SUBJECT"].includes(r.nextState.phase),
+        `${u} → ${r.nextState.phase}`
+      ).toBe(true);
+    }
+  });
+
   it("a guest parking / her boyfriend / Bob still use do not reuse Jane notes", async () => {
     const { admitted, deps } = await admitJane();
     for (const u of [
@@ -1701,6 +1740,8 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       "I have her boyfriend here, can she come up?",
       "I have her nanny here",
       "Can Bob still use the garage?",
+      "Housekeeper here, can she come up?",
+      "Nanny here, can she come up?",
     ]) {
       let answeredFromNotes = false;
       const guarded = {
@@ -1807,14 +1848,23 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
-  it("can Jane please / can the guest come up keeps Jane notes", async () => {
+  it("first-name-only Jane access clarifies; deictic the/our guest keeps notes", async () => {
     const { admitted, deps } = await admitJane();
-    for (const u of [
-      "Can Jane please come up?",
-      "Can Jane still come up?",
-      "Can the guest come up?",
-      "Can our guest come up?",
-    ]) {
+    for (const u of ["Can Jane please come up?", "Can Jane still come up?"]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(r.nextState.phase, u).toBe("CLARIFY_SUBJECT");
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+    }
+    for (const u of ["Can the guest come up?", "Can our guest come up?"]) {
       const r = await step(admitted.nextState, u, deps);
       expect(r.nextState.phase, u).not.toBe("ASK_NAME");
       expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");

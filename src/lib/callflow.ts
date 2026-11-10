@@ -4,6 +4,7 @@ import {
   classifyDeskSubject,
   clarifySubjectPrompt,
   isWholeTurnHold,
+  looksLikeCompetingCompanion,
   namesReferToSameGuest,
   stripHoldLead,
   type DeskSubject,
@@ -1161,9 +1162,14 @@ async function handleClarifySubject(
       u
     );
 
+  // Companion / other-person replies ("it's her husband", "Jane's friend")
+  // must never confirm the prior guest — same fail-closed rule as INTENT.
+  const companionOther = looksLikeCompetingCompanion(u);
+
   const aboutSame =
     !deniesKnownGuest &&
     !mentionsNew &&
+    !companionOther &&
     (/\b(?:same|her|she|that (?:guest|visitor)|the (?:guest|visitor))\b/i.test(
       u
     ) ||
@@ -1173,6 +1179,7 @@ async function handleClarifySubject(
   const aboutNew =
     deniesKnownGuest ||
     mentionsNew ||
+    companionOther ||
     (/^\s*(no|nope|nah)\b/i.test(u) && !aboutSame);
 
   if (aboutNew) {

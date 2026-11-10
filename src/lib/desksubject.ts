@@ -52,7 +52,7 @@ const DEICTIC_DET = "the|this|that|my|our|his|her|their";
  * - there is / I have + entity at a desk location (incl. "here")
  */
 const ROLE_PERSON_RE =
-  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person)\b/i;
+  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person|housekeeper|cleaner|nanny|babysitter|contractor|vendor)\b/i;
 
 const ADJ_GUEST_RE = new RegExp(
   `\\b(?:female|male|new)\\s+(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
@@ -117,6 +117,13 @@ const LOCATION_RE = new RegExp(`\\b(?:${LOCATION_TOKENS})\\b`, "i");
  * - Single-token spoken first name matching guest first name → match (partial ref)
  * - Multi-token spoken with a different surname → NOT a match (Jane Smith ≠ Jane McDaniel)
  */
+/** Spoken first name only against a multi-part listed guest — not unique. */
+function isAmbiguousFirstNameOnly(spoken: string, guestName: string): boolean {
+  const sParts = spoken.trim().split(/\s+/).filter(Boolean);
+  const gParts = guestName.trim().split(/\s+/).filter(Boolean);
+  return sParts.length === 1 && gParts.length >= 2;
+}
+
 export function namesReferToSameGuest(
   spoken: string,
   guestName: string
@@ -155,9 +162,12 @@ export function looksLikePersonIntro(utterance: string): boolean {
   );
 }
 
-/** Shared companion nouns (of-X and possessive her/his/their X). */
+/**
+ * Shared companion nouns (of-X and possessive her/his/their X).
+ * Omit bare "date" here — it collides with calendar "date of" / "her date of birth".
+ */
 const COMPANION_NOUN =
-  "friend|colleague|coworker|guest|visitor|plus\\s*one|husband|wife|partner|boyfriend|girlfriend|fianc[eé]|fiancee|son|daughter|mother|father|mom|dad|brother|sister|driver|nanny|babysitter|date|kids?|children|family\\s+member";
+  "friend|colleague|coworker|guest|visitor|plus\\s*one|husband|wife|partner|boyfriend|girlfriend|fianc[eé]|fiancee|son|daughter|mother|father|mom|dad|brother|sister|driver|nanny|babysitter|kids?|children|family\\s+member";
 
 /** "a friend of Jane" / companion framing — never the known guest alone. */
 const COMPANION_OF_RE = new RegExp(
@@ -170,6 +180,27 @@ const POSSESSIVE_COMPANION_RE = new RegExp(
   `\\b(?:her|his|their)\\s+(?:${COMPANION_NOUN})\\b`,
   "i"
 );
+
+/** "her date" as a person — not calendar "her date of birth/arrival". */
+const POSSESSIVE_DATE_COMPANION_RE =
+  /\b(?:her|his|their)\s+date\b(?!\s+of\b)/i;
+
+/** "Jane's husband" / genitive companion framing. */
+const GENITIVE_COMPANION_RE = new RegExp(
+  `\\b[\\w'’-]+'s\\s+(?:${COMPANION_NOUN})\\b`,
+  "i"
+);
+
+/** True when the utterance names a companion / other person via of/possessive. */
+export function looksLikeCompetingCompanion(utterance: string): boolean {
+  const u = utterance.trim();
+  return (
+    COMPANION_OF_RE.test(u) ||
+    POSSESSIVE_COMPANION_RE.test(u) ||
+    POSSESSIVE_DATE_COMPANION_RE.test(u) ||
+    GENITIVE_COMPANION_RE.test(u)
+  );
+}
 
 /** "I have a package/question for …" — not a visitor arrival. */
 const NON_PERSON_HAVE_OBJECT_RE =
@@ -291,8 +322,7 @@ function hasCompetingPersonSignal(
 ): boolean {
   if (EXPLICIT_OTHER_RE.test(utterance)) return true;
   if (INDEFINITE_SOMEONE_RE.test(utterance)) return true;
-  if (COMPANION_OF_RE.test(utterance)) return true;
-  if (POSSESSIVE_COMPANION_RE.test(utterance)) return true;
+  if (looksLikeCompetingCompanion(utterance)) return true;
   if (personIntro) return true;
   if (OTHER_PRONOUN_RE.test(utterance)) return true;
   if (otherAccessPersonName(utterance, guest)) return true;
@@ -308,7 +338,7 @@ function hasCompetingPersonSignal(
 
 /** she/her continuity — not possessive "her husband/friend/…". */
 function hasSameGuestPronounContinuity(utterance: string): boolean {
-  if (POSSESSIVE_COMPANION_RE.test(utterance)) return false;
+  if (looksLikeCompetingCompanion(utterance)) return false;
   if (/\bshe\b/i.test(utterance)) return true;
   // Bare objective/possessive her without a companion noun.
   if (/\bher\b/i.test(utterance)) return true;
@@ -423,7 +453,7 @@ export function classifyDeskSubject(
   }
   if (
     guest &&
-    (COMPANION_OF_RE.test(u) || POSSESSIVE_COMPANION_RE.test(u)) &&
+    looksLikeCompetingCompanion(u) &&
     (arrivalContext || isInfoSeeking(u))
   ) {
     return {
@@ -435,12 +465,16 @@ export function classifyDeskSubject(
 
   // Non-deictic visitor/guest + access/permission after a known guest —
   // never reuse notes ("Visitor for the unit").
-  // Amenity compounds (guest/visitor pass/parking/…) are not arrivals, but
-  // "a guest parking…" is person+verb — keep the fail-closed backstop.
-  const amenityCompound =
-    /\b(?:visitor|guest)\s+(?:pass|spot|space|permit|sticker|badge)\b/i.test(
+  // Amenity compounds (guest/visitor pass/parking/…) are not arrivals.
+  // "I have a guest parking…" is person+verb arrival — keep fail-closed.
+  const guestParkingArrival =
+    /\b(?:i have|i'?ve got|we have|there is|there'?s|got)\s+(?:an?\s+)?(?:visitor|guest)\s+parking\b/i.test(
       u
-    ) || /(?<!\b(?:an?)\s+)\b(?:visitor|guest)\s+parking\b/i.test(u);
+    );
+  const amenityCompound =
+    /\b(?:visitor|guest)\s+(?:pass|spot|space|permit|sticker|badge|parking)\b/i.test(
+      u
+    ) && !guestParkingArrival;
   if (
     guest &&
     /\b(?:visitor|guest)\b/i.test(u) &&
@@ -454,6 +488,7 @@ export function classifyDeskSubject(
   // --- High-confidence SAME GUEST (fail-closed note reuse) ---
   // Unambiguous name match only when there is NO competing person signal
   // (blocks "friend of Jane" / "Jane is here, can Bob…" note reuse).
+  // First-name-only matches clarify — another listed Jane could exist.
   // she/her continuity, or bare the-guest deixis WITHOUT a location.
   // "I have the guest here, can she come up?" keeps notes via she/her.
   if (guest) {
@@ -462,15 +497,22 @@ export function classifyDeskSubject(
       namesReferToSameGuest(named, guest.name) &&
       !competing
     ) {
+      // First-name-only vs a multi-part listed name is ambiguous across guests.
+      if (isAmbiguousFirstNameOnly(named, guest.name)) {
+        return { kind: "clarify" };
+      }
       return { kind: "same_guest" };
     }
-    // "Can Jane come up?" — access name matches active guest, no competitor.
+    // "Can Jane McDaniel come up?" — full access name, no competitor.
     const accessName = accessPersonName(u, guest);
     if (
       accessName &&
       namesReferToSameGuest(accessName, guest.name) &&
       !competing
     ) {
+      if (isAmbiguousFirstNameOnly(accessName, guest.name)) {
+        return { kind: "clarify" };
+      }
       return { kind: "same_guest" };
     }
     if (
