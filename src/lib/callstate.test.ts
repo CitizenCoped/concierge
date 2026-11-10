@@ -311,4 +311,61 @@ describe("same-guest continuity vs indefinite arrival (persist boundary)", () =>
     );
     expect(persisted.activeGuest).toBeUndefined();
   });
+
+  it("he/they location clarifies and persists; someone-new clears across JSON", async () => {
+    const stored = await afterJaneAdmit();
+    let notes = 0;
+    const ask = await step(
+      stored,
+      "He's downstairs, can he come up?",
+      deps(async () => {
+        notes += 1;
+        return { answer: "yes", reply: "should not run" };
+      })
+    );
+    expect(notes).toBe(0);
+    expect(ask.nextState.phase).toBe("CLARIFY_SUBJECT");
+    expect(ask.nextState.pendingUtterance).toMatch(/downstairs/i);
+
+    const clarifying = serializeCallState(
+      mergePersistedCallState(ask.nextState, stored, snapshot)
+    );
+    expect(clarifying.activeGuest?.name).toBe("Jane McDaniel");
+    expect(clarifying.pendingUtterance).toMatch(/downstairs/i);
+
+    const neu = await step(clarifying, "Someone new", deps());
+    expect(neu.nextState.phase).toBe("ASK_NAME");
+    expect(neu.nextState.activeGuest).toBeNull();
+
+    const cleared = serializeCallState(
+      mergePersistedCallState(neu.nextState, clarifying, snapshot)
+    );
+    expect(cleared.activeGuest).toBeUndefined();
+  });
+
+  it("descriptive unnamed arrivals clear Jane through persist", async () => {
+    for (const u of [
+      "There's a man at the door, can he come up?",
+      "I have a delivery person here, can they come up?",
+      "There's a female visitor downstairs",
+    ]) {
+      const stored = await afterJaneAdmit();
+      let notes = 0;
+      const ask = await step(
+        stored,
+        u,
+        deps(async () => {
+          notes += 1;
+          return { answer: "yes", reply: "should not run" };
+        })
+      );
+      expect(notes, u).toBe(0);
+      expect(ask.nextState.phase, u).toBe("ASK_NAME");
+      expect(ask.nextState.activeGuest, u).toBeNull();
+      const persisted = serializeCallState(
+        mergePersistedCallState(ask.nextState, stored, snapshot)
+      );
+      expect(persisted.activeGuest, u).toBeUndefined();
+    }
+  });
 });

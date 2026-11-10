@@ -247,6 +247,16 @@ States & behavior:
    - explicit "connect me to Scott/Monica" → TRANSFER (or ask which); never
      treat as approval or hangup. Only route to a target whose phone env var
      is set — never silently remap Monica → Scott.
+   - **Desk subject** (conservative, deterministic — prefer ask over guess):
+     - high-confidence **same guest** (named active guest, she/her, "the
+       guest") → Guest Info notes
+     - high-confidence **new arrival** (someone/somebody + access, person
+       nouns like man/woman/delivery person/visitor except "visitor
+       parking", explicit someone-else) → ASK_NAME / match; clear
+       `activeGuest`; **never** invent permissions for an unnamed person
+     - **ambiguous** with an active guest (e.g. he/they location+access
+       after Jane) → **CLARIFY_SUBJECT** ("Is this about {guest}, or
+       someone new?") — do **not** answer from prior notes until confirmed
    - visitor announcement → ASK_NAME (or extract name directly if spoken)
    - Guest Info follow-up about a named **or previously identified** active
      guest → answer strictly from `guest_info` via AI Gateway. Covers
@@ -258,6 +268,9 @@ States & behavior:
      ask if they want Scott or Monica). Do **not** blind-transfer follow-ups.
      Never invent facts/permissions; never answer for someone not on the
      active list; list membership alone is not permission.
+   - Whole-turn hold/thanks soft-close (never transfer). Hold + question →
+     answer the question. Message-taking stays in TAKE_MESSAGE unless a
+     clear new arrival is announced.
    - Negated connect requests ("don't connect me to Monica") and resident
      mentions inside guest questions ("Did Monica leave instructions?") are
      **not** transfers. OFFER_TRANSFER declines peel off a continued question
@@ -285,6 +298,9 @@ States & behavior:
    - No/ambiguous match after that → say "I don't see them on the approved
      list. Connecting you to Scott or Monica now."; fire `guest.denied`; →
      TRANSFER (fail-closed; unchanged).
+3a. **CLARIFY_SUBJECT**: desk confirmed same guest → replay pending question
+    against notes; someone new → ASK_NAME with `activeGuest: null`. Fail
+    closed to ASK_NAME if still unclear.
 3b. **OFFER_TRANSFER**: after an uncertain Guest Info answer. Yes → ask
     Scott or Monica; name → TRANSFER if configured; No / negation → return
     to INTENT listening (do not transfer). Continued guest questions while

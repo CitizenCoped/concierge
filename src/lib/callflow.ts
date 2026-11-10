@@ -1,5 +1,12 @@
 import type { GuestMatch, GuestNameRow } from "./db/guests";
 import type { NotifyEvent } from "./notify";
+import {
+  classifyDeskSubject,
+  clarifySubjectPrompt,
+  isWholeTurnHold,
+  stripHoldLead,
+  type DeskSubject,
+} from "./desksubject";
 
 // Pure call-flow state machine: (state, utterance, deps) → (reply, nextState,
 // effects). No I/O here beyond the injected matchGuest / answerGuestInfo —
@@ -21,6 +28,7 @@ export type CallPhase =
   | "GREETING"
   | "INTENT"
   | "ASK_NAME"
+  | "CLARIFY_SUBJECT"
   | "OFFER_TRANSFER"
   | "HOLDING"
   | "TAKE_MESSAGE"
@@ -53,6 +61,11 @@ export interface CallState {
   activeGuest?: ActiveGuest | null;
   /** True after a failed-transfer message was saved+notified once. */
   messageSaved?: boolean;
+  /**
+   * Ambiguous desk utterance held while we ask whether it is about
+   * `activeGuest` or someone new. Cleared when the subject is resolved.
+   */
+  pendingUtterance?: string;
 }
 
 export const INITIAL_STATE: CallState = { phase: "GREETING" };
@@ -101,9 +114,6 @@ const GREETING_ONLY_RE =
   /^\s*(hi|hello|hey|hi there|good (morning|afternoon|evening))?[.!,?\s]*$/i;
 const GOODBYE_RE =
   /\b(goodbye|good ?bye|bye|that(’|'| i)?s all|nothing (else|further)|no message|we're good|all set)\b/i;
-/** Whole-turn holds only — "Hold on, can she park?" must still reach Guest Info. */
-const HOLD_ONLY_RE =
-  /^\s*(hold on|hold please|one (sec|second|moment|minute)|let me (check|see|ask)|give me a (sec|second|moment|minute))[.!,?\s]*$/i;
 // Longer alternatives first — otherwise `\bno\b` eats "No thanks" / "No thank you".
 const DONE_RE =
   /^\s*(no thank you|no thanks?|thank you|thanks|nothing else|nothing|nope|that(’|'| i)?s (it|all|everything)|no)\b/i;
@@ -125,12 +135,6 @@ const PACKAGE_RE =
   /\b(package|parcel|deliver|delivery|mail|food|groceries|maintenance|repair|leak|noise|question|billing|elevator|amenity|hoa|garage|parking)\b/i;
 const VISITOR_RE =
   /\b(visitor|guest|here to see|here for|is here|coming up|send (him|her|them) up|has arrived|arrived|lobby|front desk|downstairs|to visit|stopping by|wants? to (come|go) up|let (him|her|them) (up|in))\b|\bha(?:ve|s)\b.*\bhere\b/i;
-/** Explicit "another / someone else" — always a fresh arrival, never prior-guest notes. */
-const NEW_OR_OTHER_VISITOR_RE =
-  /\b(?:another (?:guest|visitor|person)|someone else|somebody else|different (?:guest|visitor|person)|new (?:guest|visitor)|also (?:have|got)\s+(?:an?\s+)?(?:guest|visitor|someone|somebody)|one more (?:guest|visitor|person)|second (?:guest|visitor))\b/i;
-/** Arrival framing: "I have a guest…", "visitor in the lobby…" — not bare location / "question about the guest". */
-const ARRIVAL_FRAMING_RE =
-  /\b(?:(?:i have|i'?ve got|we have|there is|there'?s)\s+(?:an?\s+)?(?:(?:another|other|new|second)\s+)?(?:visitor|guest|someone|somebody)\b|(?:visitor|guest)\b[\s\w',-]{0,32}\b(?:lobby|front desk|downstairs|waiting|arrived|here))\b/i;
 /** Permission / access questions about a named guest (answered from guest_info). */
 const PERMISSION_TOPIC_RE =
   /\b(allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|unit|condo|key|fob|elevator|amenity)\b/i;
@@ -170,8 +174,9 @@ const NAME_PATTERNS: RegExp[] = [
   ),
 ];
 
+// Require a word boundary before the verb so "his visitor" is not stripped to "h".
 const TRAILING_CLAUSE_RE =
-  /\s*[,.]?\s*(?:is|are|was|were|can|could|should|will|would|do|does|did|may|allowed|ok|okay|please|thanks|thank you)\b.*$/i;
+  /\s*[,.]?\s*\b(?:is|are|was|were|can|could|should|will|would|do|does|did|may|allowed|ok|okay|please|thanks|thank you)\b.*$/i;
 
 // Words that can never be a visitor's name (STT phrasing debris — a real call
 // once captured "here" as the name and wrongly denied the guest).
@@ -190,6 +195,16 @@ function plausibleName(candidate: string | undefined): string | null {
   // Do not reject real names that merely start with Other (fixture: "Other Person").
   if (/^(another|someone|somebody)\b/i.test(c)) return null;
   if (/\b(another|someone|somebody|other|different)\s+(guest|visitor)\b/i.test(c)) {
+    return null;
+  }
+  // Role / demographic labels are never visitor names.
+  if (
+    /^(man|woman|guy|lady|gentleman|person|courier|driver|female|male)(\s|$)/i.test(
+      c
+    ) ||
+    /^(female|male)\s+(visitor|guest)\b/i.test(c) ||
+    /^delivery(\s+person)?\b/i.test(c)
+  ) {
     return null;
   }
   return c;
@@ -263,7 +278,7 @@ function plausibleQuestionGuestName(candidate: string | undefined): string | nul
   // through to activeGuest instead of treating filler as a missing guest.
   if (
     parts.some((p) =>
-      /^(what|when|where|how|who|why|is|are|was|were|she|he|they|her|him|them|this|that|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|question|about|regarding|also|pass|one|more|still|just|please|thanks?|scott|monica)$/i.test(
+      /^(what|when|where|how|who|why|is|are|was|were|she|he|they|her|him|them|his|hers|their|this|that|time|unit|condo|garage|parking|package|delivery|instructions?|notes?|question|about|regarding|also|pass|one|more|still|just|please|thanks?|scott|monica|use|access|visitor|guest|female|male|man|woman|person|tell|leave|give)$/i.test(
         p
       )
     )
@@ -288,92 +303,31 @@ export function looksLikeGuestPermissionQuestion(utterance: string): boolean {
   return looksLikeGuestInfoFollowUp(utterance, undefined);
 }
 
-/**
- * Same known guest continuity (pronoun / "the guest" / possessives) — keep notes.
- * Must run before arrival heuristics so lobby status and repeats do not clear.
- */
-function looksLikeSameGuestContinuity(
-  utterance: string,
-  state?: CallState
-): boolean {
-  if (!state?.activeGuest) return false;
-  const u = utterance.trim();
-  if (NEW_OR_OTHER_VISITOR_RE.test(u)) return false;
-  // Indefinite new person / fresh "a visitor" is not the known guest.
-  if (
-    /\b(someone|somebody)\b/i.test(u) ||
-    /\b(?:got|have)\s+(?:a\s+)?visitor\b/i.test(u) ||
-    /\b(?:a|an|another|new)\s+(?:guest|visitor)\b/i.test(u)
-  ) {
-    return false;
-  }
-  // "She's in the lobby…", "can she park?", "I also have her pass"
-  if (/\b(she|her)\b/i.test(u)) return true;
-  // "question about the/this guest" referring to the identified person
-  if (/\b(?:the|this)\s+(?:guest|visitor)\b/i.test(u)) return true;
-  return false;
+/** Spoken name candidates for desk-subject classification. */
+function spokenDeskName(utterance: string): string | null {
+  return extractName(utterance) || extractQuestionGuestName(utterance);
 }
 
-/**
- * Unnamed person at the door who needs identification (fail closed).
- * Covers "Someone is downstairs…", "Got a visitor…", delivery-with-person access.
- */
-function looksLikeIndefiniteUnnamedArrival(utterance: string): boolean {
-  const u = utterance.trim();
-  if (!u) return false;
-  // Non-greedy span — do not let intermediate words swallow the location token.
-  if (
-    /\b(someone|somebody)\b[\w\s,',-]{0,48}\b(downstairs|lobby|front desk|waiting|arrived|outside|door|here)\b/i.test(
-      u
-    )
-  ) {
-    return true;
-  }
-  if (/\b(?:got|have)\s+(?:a\s+)?visitor\b/i.test(u)) return true;
-  // Delivery/person at door asking to come up / be let in — not a leave-package note.
-  if (
-    /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:a\s+)?(?:delivery|package|parcel)\s+here\b/i.test(
-      u
-    ) &&
-    /\b(come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|can they|can he|can she)\b/i.test(
-      u
-    )
-  ) {
-    return true;
-  }
-  return false;
+/** Three-way desk subject: same guest / new arrival / clarify / unrelated. */
+export function deskSubjectFor(
+  utterance: string,
+  state?: CallState
+): DeskSubject {
+  return classifyDeskSubject(utterance, state?.activeGuest, {
+    spokenName: spokenDeskName(utterance),
+  });
 }
 
 /**
  * Fresh visitor announcement (possibly different/unnamed) — must not reuse a
  * prior activeGuest's notes for access answers. Same-guest pronoun / lobby
- * status / repeat questions return false and keep notes.
+ * status / clarify-needed turns return false (clarify is handled separately).
  */
 export function looksLikeNewVisitorAnnouncement(
   utterance: string,
   state?: CallState
 ): boolean {
-  const u = utterance.trim();
-  if (!u) return false;
-
-  if (NEW_OR_OTHER_VISITOR_RE.test(u)) return true;
-  if (looksLikeIndefiniteUnnamedArrival(u)) return true;
-
-  // Known-guest continuity wins over lobby / "I have…" heuristics.
-  if (looksLikeSameGuestContinuity(u, state)) return false;
-
-  const arrival = ARRIVAL_FRAMING_RE.test(u);
-
-  // Named person in an arrival announcement.
-  if (arrival && extractName(u)) return true;
-
-  // Unnamed desk announcement ("I have a guest here…", "visitor in the lobby…").
-  if (arrival && !extractQuestionGuestName(u)) return true;
-
-  // Bare VISITOR_RE hits (word "guest"/"downstairs" alone) are NOT enough —
-  // that swallowed message dictation ("call about guest A") and same-guest
-  // location follow-ups. Require real arrival framing or indefinite person.
-  return false;
+  return deskSubjectFor(utterance, state).kind === "new_arrival";
 }
 
 /**
@@ -387,8 +341,12 @@ export function looksLikeGuestInfoFollowUp(
   const u = utterance.trim();
   if (!u) return false;
 
-  // Security: never answer from prior guest notes when this turn is a new arrival.
-  if (looksLikeNewVisitorAnnouncement(u, state)) return false;
+  // Security / continuity: never answer from prior notes for a new arrival or
+  // an ambiguous subject — those routes ask for a name or clarify first.
+  const subject = deskSubjectFor(u, state);
+  if (subject.kind === "new_arrival" || subject.kind === "clarify") {
+    return false;
+  }
 
   const hasGuestContext =
     Boolean(state?.activeGuest) || Boolean(extractQuestionGuestName(u));
@@ -440,8 +398,83 @@ export function isPureDoneUtterance(utterance: string): boolean {
 function isSoftCloseUtterance(utterance: string): boolean {
   const u = utterance.trim();
   return (
-    GOODBYE_RE.test(u) || isPureDoneUtterance(u) || HOLD_ONLY_RE.test(u)
+    GOODBYE_RE.test(u) || isPureDoneUtterance(u) || isWholeTurnHold(u)
   );
+}
+
+/** Ask which person a desk turn is about — never guess from prior notes. */
+function clarifyActiveGuest(
+  state: CallState | undefined,
+  pendingUtterance: string
+): CallflowResult {
+  const guest = state?.activeGuest;
+  if (!guest) {
+    return {
+      reply: "Of course — what's the visitor's name?",
+      nextState: {
+        phase: "ASK_NAME",
+        activeGuest: null,
+        guestSnapshot: state?.guestSnapshot,
+        messageSaved: state?.messageSaved,
+      },
+      effects: [],
+    };
+  }
+  return {
+    reply: clarifySubjectPrompt(guest.name),
+    nextState: {
+      phase: "CLARIFY_SUBJECT",
+      activeGuest: guest,
+      guestSnapshot: state?.guestSnapshot,
+      messageSaved: state?.messageSaved,
+      pendingUtterance,
+      clarifies: 0,
+    },
+    effects: [],
+  };
+}
+
+/** Role / demographic labels STT may capture instead of a real person name. */
+function isRoleOrDebrisName(name: string | null | undefined): boolean {
+  if (!name) return true;
+  return /^(man|woman|guy|lady|gentleman|person|visitor|guest|courier|driver|delivery(\s+person)?|female(\s+visitor)?|male(\s+visitor)?|someone|somebody|access|parking|pass|use|her|him|them|his|hers|their)$/i.test(
+    name.trim()
+  );
+}
+
+/** Route a high-confidence new arrival: match a name or ask for one. */
+async function handleNewArrival(
+  utterance: string,
+  deps: CallflowDeps,
+  state: CallState | undefined,
+  named: string | null
+): Promise<CallflowResult> {
+  const raw = named || extractName(utterance);
+  const name = isRoleOrDebrisName(raw) ? null : raw;
+  // Always clear prior guest identity for a new arrival (security).
+  const clearedState: CallState = {
+    phase: "INTENT",
+    activeGuest: null,
+    guestSnapshot: state?.guestSnapshot,
+    messageSaved: state?.messageSaved,
+  };
+  if (name) {
+    return matchAndRespond(name, deps, {
+      denyOnMiss: false,
+      state: clearedState,
+    });
+  }
+  return {
+    reply: "Of course — what's the visitor's name?",
+    nextState: {
+      phase: "ASK_NAME",
+      // Explicit null clear — must survive webhook persistence (not `??` prior).
+      activeGuest: null,
+      guestSnapshot: state?.guestSnapshot,
+      messageSaved: state?.messageSaved,
+    },
+    effects: [],
+  };
 }
 
 function truncateNotes(info: string, max = 120): string {
@@ -466,6 +499,8 @@ function withGuest(
     ...(activeGuest !== undefined ? { activeGuest } : {}),
     guestSnapshot: state?.guestSnapshot,
     messageSaved: state?.messageSaved,
+    // Subject ambiguity is resolved once we leave CLARIFY_SUBJECT.
+    pendingUtterance: undefined,
   };
 }
 
@@ -806,13 +841,20 @@ async function matchAndRespond(
  * Answer a permission/access question from guest_info for a named or
  * previously identified (active) guest. On unclear / empty notes / model
  * failure → offer Scott/Monica (do not transfer immediately).
+ *
+ * `forceSameGuest` skips desk-subject classification — used after the desk
+ * explicitly confirms the turn is about `activeGuest`.
  */
 async function tryGuestInfoAnswer(
   utterance: string,
   deps: CallflowDeps,
-  state?: CallState
+  state?: CallState,
+  opts: { forceSameGuest?: boolean } = {}
 ): Promise<CallflowResult | null> {
-  if (!looksLikeGuestInfoFollowUp(utterance, state)) return null;
+  if (!opts.forceSameGuest && !looksLikeGuestInfoFollowUp(utterance, state)) {
+    return null;
+  }
+  if (opts.forceSameGuest && !state?.activeGuest) return null;
 
   let guest: ActiveGuest | null = null;
   const spokenName = extractQuestionGuestName(utterance);
@@ -922,10 +964,13 @@ async function handleOfferTransfer(
 }
 
 async function handleIntent(
-  utterance: string,
+  utteranceRaw: string,
   deps: CallflowDeps,
   state?: CallState
 ): Promise<CallflowResult> {
+  // "Hold on, can she park?" → keep the question; bare holds soft-close upstream.
+  const utterance = stripHoldLead(utteranceRaw) || utteranceRaw.trim();
+
   if (isIncomplete(utterance)) {
     const clarifies = state?.clarifies ?? 0;
     if (clarifies < 2) {
@@ -984,28 +1029,19 @@ async function handleIntent(
     return transferIfAvailable("monica", deps, state);
   }
 
-  // Fresh / unnamed visitor announcements take priority over Guest Info —
-  // never answer access from a prior activeGuest's notes (security).
-  // Named arrivals (e.g. "…Her name is Sarah Connor. Is she allowed…") match.
-  if (looksLikeNewVisitorAnnouncement(utterance, state)) {
-    const name = extractName(utterance);
-    if (name) {
-      return matchAndRespond(name, deps, { denyOnMiss: false, state });
-    }
-    return {
-      reply: "Of course — what's the visitor's name?",
-      nextState: {
-        phase: "ASK_NAME",
-        // Explicit null clear — must survive webhook persistence (not `??` prior).
-        activeGuest: null,
-        guestSnapshot: state?.guestSnapshot,
-        messageSaved: state?.messageSaved,
-      },
-      effects: [],
-    };
+  // Conservative desk-subject classification:
+  // - new_arrival → match/ask name (never invent unnamed permissions)
+  // - clarify → ask which person (never reuse prior notes on ambiguity)
+  // - same_guest / unrelated → Guest Info or other routing below
+  const subject = deskSubjectFor(utterance, state);
+  if (subject.kind === "new_arrival") {
+    return handleNewArrival(utterance, deps, state, subject.named);
+  }
+  if (subject.kind === "clarify") {
+    return clarifyActiveGuest(state, utterance);
   }
 
-  // Visitor arrivals that didn't trip the new-announcement helper (rare) —
+  // Visitor arrivals that didn't trip the classifier (rare) —
   // still prefer match / ask-name over blind transfer when framed as a visitor.
   if (VISITOR_RE.test(utterance) && !PACKAGE_RE.test(utterance)) {
     const name = extractName(utterance);
@@ -1029,6 +1065,121 @@ async function handleIntent(
   if (fromNotes) return fromNotes;
 
   return transferIfAvailable("scott", deps, state);
+}
+
+async function handleClarifySubject(
+  utterance: string,
+  deps: CallflowDeps,
+  state: CallState
+): Promise<CallflowResult> {
+  const u = utterance.trim();
+  if (isSoftCloseUtterance(u)) return softClose(state);
+  if (hasTransferNegation(u)) return handleTransferDecline(u, deps, state);
+
+  const guest = state.activeGuest;
+  const guestName = guest?.name ?? "";
+  const first =
+    guestName.split(/\s+/)[0]?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "";
+  const aboutSame =
+    /\b(?:same|her|she|that (?:guest|visitor)|the (?:guest|visitor))\b/i.test(
+      u
+    ) ||
+    (first && new RegExp(`\\b${first}\\b`, "i").test(u)) ||
+    /^\s*(yes|yeah|yep|yup|correct|right)\b/i.test(u);
+
+  const aboutNew =
+    /\b(?:someone new|somebody new|new (?:guest|visitor|person)|different|another|someone else|somebody else)\b/i.test(
+      u
+    ) || /^\s*(no|nope|nah)\b/i.test(u);
+
+  if (aboutNew && !aboutSame) {
+    const name = extractName(u);
+    if (name && guest && !namesMatchGuest(name, guest.name)) {
+      return matchAndRespond(name, deps, {
+        denyOnMiss: false,
+        state: { ...state, pendingUtterance: undefined },
+      });
+    }
+    return {
+      reply: "Of course — what's the visitor's name?",
+      nextState: {
+        phase: "ASK_NAME",
+        activeGuest: null,
+        guestSnapshot: state.guestSnapshot,
+        messageSaved: state.messageSaved,
+      },
+      effects: [],
+    };
+  }
+
+  if (aboutSame && guest) {
+    const pending = (state.pendingUtterance ?? "").trim();
+    // Replay the original ambiguous question against the confirmed guest.
+    if (pending) {
+      const answered = await tryGuestInfoAnswer(
+        pending,
+        deps,
+        {
+          ...state,
+          phase: "INTENT",
+          activeGuest: guest,
+          pendingUtterance: undefined,
+        },
+        { forceSameGuest: true }
+      );
+      if (answered) {
+        return {
+          ...answered,
+          nextState: {
+            ...answered.nextState,
+            pendingUtterance: undefined,
+          },
+        };
+      }
+    }
+    return {
+      reply: `Got it — what do you need to know about ${guest.name}?`,
+      nextState: withGuest(
+        { ...state, phase: "INTENT", pendingUtterance: undefined },
+        guest
+      ),
+      effects: [],
+    };
+  }
+
+  // Still unclear — ask once more, then fail closed to name ask.
+  const clarifies = state.clarifies ?? 0;
+  if (clarifies < 1 && guest) {
+    return {
+      reply: clarifySubjectPrompt(guest.name),
+      nextState: {
+        ...state,
+        phase: "CLARIFY_SUBJECT",
+        clarifies: clarifies + 1,
+      },
+      effects: [],
+    };
+  }
+  return {
+    reply: "Of course — what's the visitor's name?",
+    nextState: {
+      phase: "ASK_NAME",
+      activeGuest: null,
+      guestSnapshot: state.guestSnapshot,
+      messageSaved: state.messageSaved,
+    },
+    effects: [],
+  };
+}
+
+function namesMatchGuest(spoken: string, guestName: string): boolean {
+  const g = guestName.trim().toLowerCase();
+  const s = spoken.trim().toLowerCase();
+  if (!g || !s) return false;
+  if (g === s) return true;
+  const gFirst = g.split(/\s+/)[0] ?? "";
+  const sFirst = s.split(/\s+/)[0] ?? "";
+  return Boolean(gFirst && sFirst && gFirst === sFirst);
 }
 
 export async function step(
@@ -1102,6 +1253,9 @@ export async function step(
       });
     }
 
+    case "CLARIFY_SUBJECT":
+      return handleClarifySubject(utterance, deps, state);
+
     case "OFFER_TRANSFER":
       return handleOfferTransfer(utterance, deps, state);
 
@@ -1150,13 +1304,12 @@ export async function step(
           effects: [],
         };
       }
-      // Guest follow-up / new unnamed arrival / connect — not message body.
-      // Require a real new-visitor signal or an activeGuest notes question —
-      // do not divert on a lone "guest" word inside dictated message text.
+      // Stay in message-taking unless the desk clearly announces a new arrival.
+      // Guest-info phrasing and "call Scott" during dictation are message body
+      // (often after a failed transfer). CONFIRM_MESSAGE still finalizes then
+      // routes real follow-ups.
       if (
         looksLikeNewVisitorAnnouncement(utterance, state) ||
-        detectExplicitTransfer(utterance) ||
-        (state.activeGuest && looksLikeGuestInfoFollowUp(utterance, state)) ||
         (VISITOR_RE.test(utterance) && extractName(utterance))
       ) {
         return handleIntent(utterance, deps, {
