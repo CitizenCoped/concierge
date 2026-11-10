@@ -1,3 +1,4 @@
+import { isDeliveryListName } from "../delivery";
 import { db } from "./index";
 
 export interface Guest {
@@ -52,6 +53,23 @@ export function matchGuestAgainst(
 ): GuestMatch {
   const spoken = normalizeName(spokenName);
   if (!spoken || guests.length === 0) return { match: null, candidates: [] };
+
+  // Reserved "Delivery" list name: exact normalized identity only.
+  // Never phonetic/fuzzy either direction (Delbert/Deliveries/Deliver ↛ Delivery,
+  // and spoken "Delivery" ↛ a real guest).
+  const spokenIsDelivery = isDeliveryListName(spokenName);
+  const deliveryGuests = guests.filter((g) => isDeliveryListName(g.name));
+  const personGuests = guests.filter((g) => !isDeliveryListName(g.name));
+
+  if (spokenIsDelivery) {
+    return {
+      match: deliveryGuests.length === 1 ? deliveryGuests[0]! : null,
+      candidates: deliveryGuests,
+    };
+  }
+
+  // Spoken is a real name — ignore Delivery entries for all fuzzy passes.
+  guests = personGuests;
 
   const spokenTokens = tokens(spoken);
 

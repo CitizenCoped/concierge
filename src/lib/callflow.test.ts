@@ -779,12 +779,20 @@ describe("security: new/unnamed visitor must not reuse prior activeGuest", () =>
     expect(
       looksLikeNewVisitorAnnouncement("Got a visitor, can he come up?", state)
     ).toBe(true);
+    // Delivery arrivals are a separate subject (not new_arrival) — still must
+    // not reuse prior Guest Info notes.
     expect(
       looksLikeNewVisitorAnnouncement(
         "I have a delivery here, can they come up?",
         state
       )
-    ).toBe(true);
+    ).toBe(false);
+    expect(
+      looksLikeGuestInfoFollowUp(
+        "I have a delivery here, can they come up?",
+        state
+      )
+    ).toBe(false);
     expect(
       looksLikeGuestInfoFollowUp(
         "I also have someone else here, can he come up?",
@@ -1490,7 +1498,6 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     const { admitted, deps } = await admitJane();
     for (const u of [
       "There's a man at the door, can he come up?",
-      "I have a delivery person here, can they come up?",
       "There's a female visitor downstairs asking for access",
       "I have a female guest here, can she come up?",
       "Guest in the lobby wants to come up",
@@ -1510,6 +1517,30 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       expect(r.nextState.activeGuest, u).toBeNull();
       expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
     }
+  });
+
+  it("delivery person after Jane does not reuse Jane notes (no Delivery entry)", async () => {
+    const { admitted, deps } = await admitJane();
+    // admitJane's matchGuest returns Jane for any name — Delivery path must
+    // still refuse unless the matched row is literally named Delivery.
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
+    const r = await step(
+      admitted.nextState,
+      "I have a delivery person here, can they come up?",
+      guarded
+    );
+    expect(answeredFromNotes).toBe(false);
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeNull();
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+    expect(notifyEvents(r.effects)).not.toContain("guest.admitted");
   });
 
   it("clarify denials / yes-someone-new clear Jane (never forceSameGuest)", async () => {
@@ -2063,5 +2094,163 @@ describe("name extraction stop-word boundaries", () => {
     );
     expect(extractName("I have Ann here")).toBe("Ann");
     expect(extractName("I have Helen waiting")).toBe("Helen");
+  });
+});
+
+describe("delivery approval (reserved Delivery list entry)", () => {
+  const delivery = guest(
+    "Delivery",
+    "Food deliveries OK — send to unit 305",
+    "00000000-0000-0000-0000-00000000d001"
+  );
+  const jane = guest("Jane McDaniel", "House keeper notes");
+
+  const deliveryDeps = (
+    extras: {
+      deliveryMatch?: typeof delivery | null;
+      janeMatch?: typeof jane | null;
+      answerGuestInfo?: CallflowDeps["answerGuestInfo"];
+    } = {}
+  ) => {
+    const deliveryMatch =
+      extras.deliveryMatch === undefined ? delivery : extras.deliveryMatch;
+    const janeMatch =
+      extras.janeMatch === undefined ? jane : extras.janeMatch;
+    return depsWith(async (name: string) => {
+      const n = name.trim().toLowerCase();
+      if (n === "delivery" || /^delivery[.!\s]*$/i.test(name.trim())) {
+        return deliveryMatch
+          ? { match: deliveryMatch, candidates: [deliveryMatch] }
+          : { match: null, candidates: [] };
+      }
+      if (/jane/i.test(name)) {
+        return janeMatch
+          ? { match: janeMatch, candidates: [janeMatch] }
+          : { match: null, candidates: [] };
+      }
+      return { match: null, candidates: [] };
+    }, { answerGuestInfo: extras.answerGuestInfo });
+  };
+
+  it("active Delivery + food delivery → approved, call stays open, anything-else prompt", async () => {
+    for (const u of [
+      "There's a DoorDash delivery downstairs",
+      "I have a food delivery here, can they come up?",
+      "Uber Eats is here",
+      "Instacart groceries at the door",
+      "I have a delivery here, can they come up?",
+    ]) {
+      const r = await step({ phase: "INTENT" }, u, deliveryDeps());
+      expect(r.action, u).toBeUndefined();
+      expect(r.action, u).not.toBe("hangup");
+      expect(outcomeOf(r.effects), u).toBe("guest_admitted");
+      expect(notifyEvents(r.effects), u).toContain("guest.admitted");
+      expect(r.nextState.phase, u).toBe("INTENT");
+      expect(r.nextState.activeGuest?.name, u).toBe("Delivery");
+      expect(r.reply.toLowerCase(), u).toMatch(/expecting a delivery/);
+      expect(r.reply, u).toMatch(/305/);
+      expect(r.reply.toLowerCase(), u).toMatch(/anything else/);
+    }
+  });
+
+  it("no active Delivery entry → not approved, ask for name (today's behavior)", async () => {
+    const r = await step(
+      { phase: "INTENT" },
+      "There's a DoorDash delivery downstairs",
+      deliveryDeps({ deliveryMatch: null })
+    );
+    expect(outcomeOf(r.effects)).not.toBe("guest_admitted");
+    expect(notifyEvents(r.effects)).not.toContain("guest.admitted");
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeNull();
+    expect(r.reply.toLowerCase()).toMatch(/visitor'?s name/);
+  });
+
+  it("expired/missing Delivery via match miss behaves like no entry", async () => {
+    const r = await step(
+      { phase: "INTENT" },
+      "I have a delivery person here, can they come up?",
+      noMatch
+    );
+    expect(outcomeOf(r.effects)).not.toBe("guest_admitted");
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.reply.toLowerCase()).toMatch(/visitor'?s name/);
+  });
+
+  it("delivery after a named guest was approved clears that guest", async () => {
+    const deps = deliveryDeps();
+    const admitted = await step(
+      { phase: "INTENT" },
+      "Jane McDaniel is here to see Scott",
+      deps
+    );
+    expect(admitted.nextState.activeGuest?.name).toBe("Jane McDaniel");
+
+    let answeredFromJane = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromJane = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
+    const d = await step(
+      admitted.nextState,
+      "There's a DoorDash here with food",
+      guarded
+    );
+    expect(answeredFromJane).toBe(false);
+    expect(outcomeOf(d.effects)).toBe("guest_admitted");
+    expect(d.nextState.activeGuest?.name).toBe("Delivery");
+    expect(d.nextState.activeGuest?.name).not.toBe("Jane McDaniel");
+    expect(d.reply).toMatch(/305/);
+  });
+
+  it("named guest after a delivery does not inherit Delivery approval", async () => {
+    const deps = deliveryDeps();
+    const del = await step(
+      { phase: "INTENT" },
+      "I have a food delivery here, can they come up?",
+      deps
+    );
+    expect(del.nextState.activeGuest?.name).toBe("Delivery");
+
+    const janeAdmit = await step(
+      del.nextState,
+      "Jane McDaniel is here, can she come up?",
+      deps
+    );
+    expect(outcomeOf(janeAdmit.effects)).toBe("guest_admitted");
+    expect(janeAdmit.nextState.activeGuest?.name).toBe("Jane McDaniel");
+    expect(janeAdmit.reply.toLowerCase()).not.toMatch(/expecting a delivery/);
+    expect(janeAdmit.reply).not.toMatch(/305/);
+    expect(janeAdmit.reply.toLowerCase()).toMatch(/jane mcdaniel is expected/);
+  });
+
+  it("ambiguous delivery-vs-visitor wording asks, never approves", async () => {
+    for (const u of [
+      "I have a visitor with a delivery, can they come up?",
+      "Someone is here with a delivery for you",
+    ]) {
+      const r = await step({ phase: "INTENT" }, u, deliveryDeps());
+      expect(outcomeOf(r.effects), u).not.toBe("guest_admitted");
+      expect(notifyEvents(r.effects), u).not.toContain("guest.admitted");
+      expect(r.reply.toLowerCase(), u).toMatch(/delivery.*visitor|visitor.*delivery/);
+      expect(r.nextState.phase, u).toBe("INTENT");
+    }
+  });
+
+  it("saying Delivery as the guest name admits when entry is active", async () => {
+    const r = await step({ phase: "ASK_NAME" }, "Delivery", deliveryDeps());
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
+    expect(r.nextState.activeGuest?.name).toBe("Delivery");
+    expect(r.reply).toMatch(/305/);
+    expect(r.action).toBeUndefined();
+  });
+
+  it("saying Delivery with punctuation still matches the list entry", async () => {
+    const r = await step({ phase: "ASK_NAME" }, "delivery!", deliveryDeps());
+    expect(outcomeOf(r.effects)).toBe("guest_admitted");
+    expect(r.nextState.activeGuest?.name).toBe("Delivery");
   });
 });

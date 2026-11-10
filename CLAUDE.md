@@ -197,7 +197,10 @@ npm run provision      scripts/provision-agentphone.ts — idempotent agent +
   transfer/hold instead, and notify.
 - Guest name matching: case-insensitive, trimmed, tolerant of "first-name
   only if unique in the active window" — but exact-window validity is strict
-  (`start ≤ now ≤ end` in building-local time).
+  (`start ≤ now ≤ end` in building-local time). The reserved list name
+  **Delivery** (owner-entered single word, normal time window) is exact-match
+  only: food/courier arrivals approve send-up to unit 305 when that entry is
+  active; never phonetic/fuzzy either direction; never approve without it.
 - Idempotency everywhere webhooks touch money/access/notifications.
 - Any change to the call-flow state machine requires updating both the flow
   doc in PROMPT.md §5 and the tests in `src/lib/callflow.test.ts`.

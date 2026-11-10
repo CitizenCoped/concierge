@@ -1,4 +1,10 @@
 import type { GuestMatch, GuestNameRow } from "./db/guests";
+import {
+  CONDO_UNIT,
+  clarifyDeliveryOrVisitorPrompt,
+  deliveryApprovalReply,
+  isDeliveryListName,
+} from "./delivery";
 import type { NotifyEvent } from "./notify";
 import {
   classifyDeskSubject,
@@ -200,6 +206,8 @@ const NON_NAME_RE =
 function plausibleName(candidate: string | undefined): string | null {
   const c = candidate?.trim().replace(/^(an?|the)\s+/i, "");
   if (!c) return null;
+  // Reserved guest-list name — owner entry is the single word "Delivery".
+  if (isDeliveryListName(c)) return "Delivery";
   if (NON_NAME_RE.test(c)) return null; // exact filler words ("here", "visitor", …)
   // location/delivery phrases are never names, but a name may CONTAIN a filler
   // word (the acceptance-test guest is literally called "Test Visitor")
@@ -385,10 +393,15 @@ export function looksLikeGuestInfoFollowUp(
   const u = utterance.trim();
   if (!u) return false;
 
-  // Security / continuity: never answer from prior notes for a new arrival or
-  // an ambiguous subject — those routes ask for a name or clarify first.
+  // Security / continuity: never answer from prior notes for a new arrival,
+  // delivery arrival, or an ambiguous subject — those routes ask / clarify first.
   const subject = deskSubjectFor(u, state);
-  if (subject.kind === "new_arrival" || subject.kind === "clarify") {
+  if (
+    subject.kind === "new_arrival" ||
+    subject.kind === "delivery_arrival" ||
+    subject.kind === "clarify" ||
+    subject.kind === "clarify_delivery"
+  ) {
     return false;
   }
 
@@ -511,9 +524,90 @@ function clarifyActiveGuest(
 /** Role / demographic labels STT may capture instead of a real person name. */
 function isRoleOrDebrisName(name: string | null | undefined): boolean {
   if (!name) return true;
+  // Reserved list name is valid (not debris).
+  if (isDeliveryListName(name)) return false;
   return /^(man|woman|guy|lady|gentleman|person|visitor|guest|courier|driver|delivery(\s+person)?|female(\s+visitor)?|male(\s+visitor)?|someone|somebody|access|parking|pass|use|her|him|them|his|hers|their)$/i.test(
     name.trim()
   );
+}
+
+/**
+ * Approve an active Delivery list entry (unit 305). Call stays open with
+ * activeGuest set to Delivery — a separate subject from named guests.
+ */
+function admitDelivery(
+  match: GuestNameRow,
+  state: CallState | undefined
+): CallflowResult {
+  const active = asActiveGuest(match);
+  return {
+    reply: deliveryApprovalReply(),
+    nextState: withGuest(
+      {
+        phase: "INTENT",
+        activeGuest: null,
+        guestSnapshot: state?.guestSnapshot,
+        messageSaved: state?.messageSaved,
+      },
+      active
+    ),
+    lookupPending: true,
+    effects: [
+      {
+        type: "notify",
+        event: "guest.admitted",
+        message: `Guest = Delivery has been let into the building (unit ${CONDO_UNIT})`,
+      },
+      { type: "outcome", outcome: "guest_admitted", guestId: match.id },
+    ],
+  };
+}
+
+/**
+ * Food/courier arrival → match the reserved Delivery list entry.
+ * No active Delivery window ⇒ today's behavior (ask for a name, no approval).
+ * Always clears any prior named activeGuest (separate subject).
+ */
+async function handleDeliveryArrival(
+  deps: CallflowDeps,
+  state: CallState | undefined
+): Promise<CallflowResult> {
+  const clearedAsk: CallState = {
+    phase: "ASK_NAME",
+    activeGuest: null,
+    guestSnapshot: state?.guestSnapshot,
+    messageSaved: state?.messageSaved,
+  };
+  let result: GuestMatch;
+  try {
+    result = await deps.matchGuest("Delivery");
+  } catch (e) {
+    return {
+      reply:
+        "I'm having a little trouble checking the list. Connecting you to Scott now.",
+      nextState: { phase: "DONE" },
+      action: "transfer",
+      transferTarget: "scott",
+      lookupPending: true,
+      effects: [
+        {
+          type: "notify",
+          event: "system.error",
+          message: `Delivery lookup failed — failing closed to transfer (${String(e)})`,
+        },
+        { type: "outcome", outcome: "error" },
+      ],
+    };
+  }
+  if (result.match && isDeliveryListName(result.match.name)) {
+    return admitDelivery(result.match, state);
+  }
+  // Fail closed: never approve a delivery without an active Delivery entry.
+  return {
+    reply: "Of course — what's the visitor's name?",
+    nextState: clearedAsk,
+    effects: [],
+  };
 }
 
 /** Route a high-confidence new arrival: match a name or ask for one. */
@@ -850,6 +944,10 @@ async function matchAndRespond(
     };
   }
   if (result.match) {
+    // Delivery list entry gets the unit-305 spoken reply (exact match only).
+    if (isDeliveryListName(result.match.name)) {
+      return admitDelivery(result.match, opts.state);
+    }
     const notes = result.match.guest_info?.trim();
     const notesSuffix = notes ? ` — notes: ${truncateNotes(notes)}` : "";
     const active = asActiveGuest(result.match);
@@ -1110,10 +1208,22 @@ async function handleIntent(
   }
 
   // Conservative desk-subject classification:
+  // - delivery_arrival → match reserved Delivery entry (never fuzzy; clear prior)
+  // - clarify_delivery → ask delivery vs visitor (fail closed)
   // - new_arrival → match/ask name (never invent unnamed permissions)
   // - clarify → ask which person (never reuse prior notes on ambiguity)
   // - same_guest / unrelated → Guest Info or other routing below
   const subject = deskSubjectFor(utterance, state);
+  if (subject.kind === "delivery_arrival") {
+    return handleDeliveryArrival(deps, state);
+  }
+  if (subject.kind === "clarify_delivery") {
+    return {
+      reply: clarifyDeliveryOrVisitorPrompt(),
+      nextState: withGuest(state),
+      effects: [],
+    };
+  }
   if (subject.kind === "new_arrival") {
     return handleNewArrival(utterance, deps, state, subject.named);
   }
@@ -1170,6 +1280,25 @@ async function handleClarifySubject(
   const u = utterance.trim();
   if (isSoftCloseUtterance(u)) return softClose(state);
   if (hasTransferNegation(u)) return handleTransferDecline(u, deps, state);
+
+  // Desk resolved ambiguity as a delivery — separate subject from the known guest.
+  const clarifySubject = deskSubjectFor(u, {
+    ...state,
+    activeGuest: null, // classify the reply itself, not against prior guest
+  });
+  if (clarifySubject.kind === "delivery_arrival") {
+    return handleDeliveryArrival(deps, state);
+  }
+  if (clarifySubject.kind === "clarify_delivery") {
+    return {
+      reply: clarifyDeliveryOrVisitorPrompt(),
+      nextState: {
+        ...state,
+        phase: "CLARIFY_SUBJECT",
+      },
+      effects: [],
+    };
+  }
 
   const guest = state.activeGuest;
   const guestName = guest?.name ?? "";
@@ -1433,18 +1562,23 @@ export async function step(
           effects: [],
         };
       }
-      // Stay in message-taking unless the desk clearly announces a new arrival.
-      // Guest-info phrasing and "call Scott" during dictation are message body
-      // (often after a failed transfer). CONFIRM_MESSAGE still finalizes then
-      // routes real follow-ups.
-      if (
-        looksLikeNewVisitorAnnouncement(utterance, state) ||
-        (VISITOR_RE.test(utterance) && extractName(utterance))
-      ) {
-        return handleIntent(utterance, deps, {
-          ...state,
-          phase: "INTENT",
-        });
+      // Stay in message-taking unless the desk clearly announces a new arrival
+      // or a delivery (separate subject). Guest-info phrasing and "call Scott"
+      // during dictation are message body (often after a failed transfer).
+      // CONFIRM_MESSAGE still finalizes then routes real follow-ups.
+      {
+        const subjectKind = deskSubjectFor(utterance, state).kind;
+        if (
+          subjectKind === "new_arrival" ||
+          subjectKind === "delivery_arrival" ||
+          subjectKind === "clarify_delivery" ||
+          (VISITOR_RE.test(utterance) && extractName(utterance))
+        ) {
+          return handleIntent(utterance, deps, {
+            ...state,
+            phase: "INTENT",
+          });
+        }
       }
       return {
         reply: "Got it. Anything else?",
@@ -1481,23 +1615,28 @@ export async function step(
         };
       }
 
-      // Continued guest question / clarify subject / new arrival / connect after
-      // leaving a message: finalize once, then handle the new intent (no hangup).
-      if (
-        looksLikeGuestInfoFollowUp(utterance, state) ||
-        looksLikeNewVisitorAnnouncement(utterance, state) ||
-        deskSubjectFor(utterance, state).kind === "clarify" ||
-        detectExplicitTransfer(utterance) ||
-        (VISITOR_RE.test(utterance) && extractName(utterance))
-      ) {
-        const finalized = finalizeTakenMessage(state, {
-          keepListeningPrompt: false,
-        });
-        const next = await handleIntent(utterance, deps, finalized.nextState);
-        return {
-          ...next,
-          effects: [...finalized.effects, ...next.effects],
-        };
+      // Continued guest question / clarify / new arrival / delivery / connect
+      // after leaving a message: finalize once, then handle the new intent.
+      {
+        const subjectKind = deskSubjectFor(utterance, state).kind;
+        if (
+          looksLikeGuestInfoFollowUp(utterance, state) ||
+          subjectKind === "new_arrival" ||
+          subjectKind === "delivery_arrival" ||
+          subjectKind === "clarify" ||
+          subjectKind === "clarify_delivery" ||
+          detectExplicitTransfer(utterance) ||
+          (VISITOR_RE.test(utterance) && extractName(utterance))
+        ) {
+          const finalized = finalizeTakenMessage(state, {
+            keepListeningPrompt: false,
+          });
+          const next = await handleIntent(utterance, deps, finalized.nextState);
+          return {
+            ...next,
+            effects: [...finalized.effects, ...next.effects],
+          };
+        }
       }
 
       return {

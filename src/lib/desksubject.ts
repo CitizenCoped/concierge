@@ -4,8 +4,11 @@
  * Conservative contract (security + continuity):
  * - same_guest: high confidence this turn is about the known activeGuest
  * - new_arrival: high confidence a different/unnamed person is being introduced
+ * - delivery_arrival: food/courier delivery — separate subject from named guests;
+ *   matches the reserved "Delivery" list entry (never fuzzy)
  * - clarify: activeGuest is set but reference is ambiguous — ask, never answer
  *   from prior notes and never invent permissions for an unnamed person
+ * - clarify_delivery: unclear whether the desk means a delivery or a visitor
  * - unrelated: not a guest-subject / arrival turn (packages, etc. handled elsewhere)
  *
  * Prefer ask-over-guess. Avoid stacking unrelated phrase lists: use structural
@@ -18,16 +21,25 @@
  * clarify (or new_arrival when the arrival cue is high-confidence).
  */
 
+import {
+  isAmbiguousDeliveryOrVisitor,
+  looksLikeDeliveryTypeArrival,
+} from "./delivery";
+
 export type DeskSubjectKind =
   | "same_guest"
   | "new_arrival"
+  | "delivery_arrival"
   | "clarify"
+  | "clarify_delivery"
   | "unrelated";
 
 export type DeskSubject =
   | { kind: "same_guest" }
   | { kind: "new_arrival"; named: string | null }
+  | { kind: "delivery_arrival" }
   | { kind: "clarify" }
+  | { kind: "clarify_delivery" }
   | { kind: "unrelated" };
 
 export type DeskGuestRef = { name: string };
@@ -408,6 +420,16 @@ export function classifyDeskSubject(
   const named = opts.spokenName?.trim() || null;
   const personIntro = looksLikePersonIntro(u);
   const competing = hasCompetingPersonSignal(u, named, guest, personIntro);
+
+  // --- Delivery vs visitor (fail-closed) ---
+  // Food/courier arrivals are a separate subject from any prior named guest.
+  // Ambiguous delivery-or-visitor wording asks; never reuse prior notes.
+  if (isAmbiguousDeliveryOrVisitor(u)) {
+    return { kind: "clarify_delivery" };
+  }
+  if (looksLikeDeliveryTypeArrival(u)) {
+    return { kind: "delivery_arrival" };
+  }
 
   // --- High-confidence NEW ARRIVAL ---
   if (EXPLICIT_OTHER_RE.test(u)) {

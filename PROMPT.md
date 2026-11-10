@@ -255,14 +255,23 @@ States & behavior:
        arrived, no she/her) clarifies; “I have the guest here, can she
        come up?” still uses notes via she/her. Companion-of / different
        access name (“friend of Jane”, “can Bob come up?”) → new arrival.
+     - high-confidence **delivery arrival** (food, groceries, DoorDash,
+       Uber Eats, Instacart, takeout, “delivery here/person” asking to
+       come up, etc.) → match the reserved guest-list name **Delivery**
+       (exact, case-insensitive, punctuation/whitespace tolerant — **never**
+       phonetic/fuzzy either direction). Active Delivery window → approve
+       send-up to unit **305**, keep the call open, set `activeGuest` to
+       Delivery (separate subject from any prior named guest). No active
+       Delivery entry → ASK_NAME, no approval (fail closed). Ambiguous
+       delivery-vs-visitor wording → ask which, never guess.
      - high-confidence **new arrival** (someone/somebody + arrival/access
-       e.g. parking/here, person nouns like man/woman/delivery
-       person/housekeeper/visitor except "visitor parking", named
-       different person at the door, explicit someone-else) → ASK_NAME /
-       match; clear `activeGuest`; **never** invent permissions for an
-       unnamed person. Reuse of `activeGuest` requires a full unambiguous
-       name match (first-name-only OK; conflicting surname e.g. Jane Smith
-       ≠ Jane McDaniel is **not** the same guest).
+       e.g. parking/here, person nouns like man/woman/housekeeper/visitor
+       except "visitor parking", named different person at the door,
+       explicit someone-else) → ASK_NAME / match; clear `activeGuest`;
+       **never** invent permissions for an unnamed person. Reuse of
+       `activeGuest` requires a full unambiguous name match (first-name-only
+       OK; conflicting surname e.g. Jane Smith ≠ Jane McDaniel is **not**
+       the same guest).
      - **ambiguous** with an active guest (e.g. he/they; mixed he+her;
        indefinite someone without clear arrival framing like “did someone
        leave instructions for her?”) → **CLARIFY_SUBJECT** ("Is this about
