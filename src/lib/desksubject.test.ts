@@ -113,6 +113,29 @@ describe("classifyDeskSubject", () => {
     ).toBe("clarify");
   });
 
+  it("clarify: deictic the/this/our guest + location without she/her (no note reuse)", () => {
+    expect(
+      classifyDeskSubject("The guest in the lobby wants to come up", jane)
+        .kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject(
+        "The visitor is downstairs asking for access",
+        jane
+      ).kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("This guest is at the door, can they come up?", jane)
+        .kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("Our guest is in the lobby", jane).kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("This guest is waiting outside", jane).kind
+    ).toBe("clarify");
+  });
+
   it("visitor parking compound is not a new person", () => {
     expect(
       classifyDeskSubject("Does she have visitor parking available?", jane)

@@ -1637,6 +1637,30 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
+  it("deictic guest + location without she/her clarifies (no Jane notes)", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "The guest in the lobby wants to come up",
+      "Our guest is in the lobby",
+      "This guest is waiting outside",
+      "The visitor is downstairs asking for access",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(r.nextState.phase, u).toBe("CLARIFY_SUBJECT");
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+    }
+  });
+
   it("she/her with a new person intro does not bind to Jane", async () => {
     const { admitted, deps } = await admitJane();
     for (const u of [

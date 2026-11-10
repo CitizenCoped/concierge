@@ -12,8 +12,9 @@
  * cues (person intro, location arrival, deixis, pronouns) with fail-closed ties.
  *
  * Note reuse is fail-closed: answer from activeGuest notes ONLY when the turn
- * clearly refers to that guest — unambiguous name match, or she/her / the-guest
- * deixis with NO competing new-person / new-arrival signal at all. Otherwise
+ * clearly refers to that guest — unambiguous name match, she/her continuity, or
+ * bare the-guest deixis without a location, and with NO competing new-person /
+ * new-arrival signal at all. Deictic + location alone clarifies. Otherwise
  * clarify (or new_arrival when the arrival cue is high-confidence).
  */
 
@@ -264,15 +265,19 @@ export function classifyDeskSubject(
   }
 
   // --- High-confidence SAME GUEST (fail-closed note reuse) ---
-  // Unambiguous name match → same guest. Pronoun / the-guest deixis only
-  // when there is no competing new-person / new-arrival signal at all.
+  // Unambiguous name match → same guest. she/her continuity, or bare
+  // the/this/our guest deixis WITHOUT a location (location + deictic alone
+  // is ambiguous after a prior admit — "The guest in the lobby…" → clarify).
+  // Both require no competing new-person / new-arrival signal.
+  // "I have the guest here, can she come up?" keeps notes via she/her.
   if (guest) {
     if (named && namesReferToSameGuest(named, guest.name)) {
       return { kind: "same_guest" };
     }
     if (
       !competing &&
-      (SAME_PRONOUN_RE.test(u) || DEICTIC_GUEST_RE.test(u))
+      (SAME_PRONOUN_RE.test(u) ||
+        (DEICTIC_GUEST_RE.test(u) && !LOCATION_RE.test(u)))
     ) {
       return { kind: "same_guest" };
     }
