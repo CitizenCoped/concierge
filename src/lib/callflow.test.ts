@@ -2284,11 +2284,26 @@ describe("delivery approval (reserved Delivery list entry)", () => {
       "take out",
       "Notes mention food delivery",
       "They ordered groceries earlier",
+      "Yes delivery should be left at the door",
+      "Yes, where should the delivery be left?",
     ]) {
       const r = await step({ phase: "INTENT" }, u, deliveryDeps());
       expect(outcomeOf(r.effects), u).not.toBe("guest_admitted");
       expect(notifyEvents(r.effects), u).not.toContain("guest.admitted");
       expect(r.nextState.activeGuest?.name, u).not.toBe("Delivery");
+    }
+  });
+
+  it("takeout/food at a location still matches the Delivery list", async () => {
+    for (const u of [
+      "Takeout is here",
+      "There's takeout downstairs",
+      "There's food downstairs, can they come up?",
+    ]) {
+      const r = await step({ phase: "INTENT" }, u, deliveryDeps());
+      expect(outcomeOf(r.effects), u).toBe("guest_admitted");
+      expect(r.nextState.activeGuest?.name, u).toBe("Delivery");
+      expect(r.reply, u).toMatch(/305/);
     }
   });
 

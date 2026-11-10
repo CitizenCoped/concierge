@@ -43,6 +43,16 @@ const DELIVERY_COURIER_RE =
 const DELIVERY_INTRO_RE =
   /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:a\s+)?delivery\b/i;
 
+/**
+ * Takeout/food/groceries announced at a location without needing the word
+ * "delivery" — "Takeout is here", "There's food downstairs".
+ */
+const FOOD_AT_LOCATION_RE =
+  /\b(?:take[\s-]?out|food|grocer(?:y|ies))\s+(?:is|are|'s)\s+(?:here|downstairs|outside|waiting|arrived|at the door|in the lobby)\b/i;
+
+const HAVE_FOOD_INTRO_RE =
+  /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:an?\s+)?(?:take[\s-]?out|food|grocer(?:y|ies))\b/i;
+
 const ARRIVAL_OR_ACCESS_RE =
   /\b(?:here|downstairs|lobby|outside|waiting|arrived|at the door|at the front desk|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|can they|can he|can she)\b/i;
 
@@ -55,22 +65,20 @@ const PACKAGE_FOR_NAMED_RE =
   /\b(?:package|parcel|delivery|question)\s+for\s+(?!delivery\b)(?!the\b|a\b|an\b|you\b|us\b|them\b|him\b|her\b|me\b|scott\b|monica\b|unit\b|condo\b)[A-Za-z]/i;
 
 /**
- * Clarify-reply confirmations: bare "Delivery", "it's a delivery",
- * "yes, a delivery" — used after we asked delivery-vs-visitor.
+ * Clarify-reply confirmations: whole-turn only — bare "Delivery",
+ * "it's a delivery", "yes, a delivery". Never prefix-match guest-info
+ * questions ("Yes delivery should be left…") or "delivery for Jane".
  */
 export function looksLikeDeliveryClarifyReply(utterance: string): boolean {
   const u = utterance.trim();
   if (!u) return false;
+  if (PACKAGE_FOR_NAMED_RE.test(u)) return false;
+  // Whole utterance only (trailing punctuation/whitespace OK).
   if (/^\s*(?:it'?s\s+)?(?:a\s+)?delivery[.!,?\s]*$/i.test(u)) return true;
   if (
     /^\s*(?:yes|yeah|yep|yup|correct|right)[,.]?\s+(?:it'?s\s+)?(?:a\s+)?delivery[.!,?\s]*$/i.test(
       u
     )
-  ) {
-    return true;
-  }
-  if (
-    /^\s*(?:yes|yeah|yep|yup)[,.]?\s+(?:it'?s\s+)?(?:a\s+)?delivery\b/i.test(u)
   ) {
     return true;
   }
@@ -115,6 +123,9 @@ export function looksLikeDeliveryTypeArrival(utterance: string): boolean {
   if (!hasArrival) return false;
 
   if (FOOD_BRAND_RE.test(u) || FOOD_DELIVERY_PHRASE_RE.test(u)) return true;
+  // "Takeout is here" / "There's food downstairs" — no "deliver*" required.
+  if (FOOD_AT_LOCATION_RE.test(u)) return true;
+  if (HAVE_FOOD_INTRO_RE.test(u)) return true;
   if (FOOD_OR_GROCERIES_RE.test(u) && /\bdeliver/i.test(u)) return true;
   if (
     FOOD_OR_GROCERIES_RE.test(u) &&

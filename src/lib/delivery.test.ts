@@ -53,6 +53,10 @@ describe("looksLikeDeliveryTypeArrival", () => {
       "Instacart groceries at the door",
       "I have a food delivery here, can they come up?",
       "We have a takeout delivery here",
+      "Takeout is here",
+      "There's takeout downstairs",
+      "There's food downstairs",
+      "Groceries are at the door",
       "I have a delivery here, can they come up?",
       "I have a delivery person here, can they come up?",
       "it's a delivery",
@@ -76,6 +80,9 @@ describe("looksLikeDeliveryTypeArrival", () => {
       "We have a delivery for Jane",
       "I have a question for Jane",
       "I've got a package delivery for the unit",
+      "Yes delivery should be left at the door",
+      "Yes, where should the delivery be left?",
+      "yes, a delivery for Jane",
     ]) {
       expect(looksLikeDeliveryTypeArrival(u), u).toBe(false);
     }
