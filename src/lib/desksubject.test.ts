@@ -182,6 +182,19 @@ describe("classifyDeskSubject", () => {
     ).toBe("same_guest");
   });
 
+  it("same guest: given names that look like determiners (An, My)", () => {
+    const an = { name: "An Nguyen" };
+    const my = { name: "My Tran" };
+    expect(classifyDeskSubject("Can An Nguyen come up?", an).kind).toBe(
+      "same_guest"
+    );
+    expect(classifyDeskSubject("Can An come up?", an).kind).toBe("same_guest");
+    expect(classifyDeskSubject("Can My Tran come up?", my).kind).toBe(
+      "same_guest"
+    );
+    expect(classifyDeskSubject("Can My come up?", my).kind).toBe("same_guest");
+  });
+
   it("same guest: deictic can the/our guest come up (not a new arrival)", () => {
     expect(
       classifyDeskSubject("Can the guest come up?", jane).kind

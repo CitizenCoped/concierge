@@ -155,20 +155,18 @@ const ACCESS_NAME_TRAILING_FILLER_RE =
   /^(please|still|just|now|also|again|yet|too|really|already)$/i;
 
 /**
- * Normalize a captured access-name span: drop leading determiners and trailing
- * adverbs/fillers; reject pronouns and deictic guest/visitor phrases.
+ * Normalize a captured access-name span: strip trailing adverbs/fillers only.
+ * Do NOT strip leading a/an/the/my — those can be real given names (An, My).
+ * Reject pronouns and whole deictic guest/visitor phrases.
  */
-function cleanAccessPersonName(raw: string): string | null {
+function cleanAccessPersonName(
+  raw: string,
+  guest?: DeskGuestRef | null
+): string | null {
   const parts = raw
     .trim()
     .split(/\s+/)
     .filter(Boolean);
-  while (
-    parts.length &&
-    /^(the|a|an|this|that|our|my|your)$/i.test(parts[0]!)
-  ) {
-    parts.shift();
-  }
   while (
     parts.length &&
     ACCESS_NAME_TRAILING_FILLER_RE.test(parts[parts.length - 1]!)
@@ -177,7 +175,7 @@ function cleanAccessPersonName(raw: string): string | null {
   }
   const cleaned = parts.join(" ").trim();
   if (!cleaned) return null;
-  // Pronouns / indefinite — not a person name for access routing.
+  // Pronouns / indefinite / bare role — not a person name for access routing.
   if (
     /^(she|he|they|her|him|them|someone|somebody|guest|visitor)$/i.test(
       cleaned
@@ -185,10 +183,17 @@ function cleanAccessPersonName(raw: string): string | null {
   ) {
     return null;
   }
-  // Deictic "the/our guest" after partial cleanup, or multi-token deixis.
+  // Bare determiner-shaped tokens are usually debris, but keep them when they
+  // match the known guest's given name (An, My).
+  if (/^(the|a|an|this|that|our|my|your)$/i.test(cleaned)) {
+    if (guest && namesReferToSameGuest(cleaned, guest.name)) return cleaned;
+    return null;
+  }
+  // Whole deictic role phrases ("the guest", "our visitor") — not a new name.
   if (
-    /^(the|this|that|our|my|your)\s+(guest|visitor)\b/i.test(raw.trim()) ||
-    /^(guest|visitor)\b/i.test(cleaned)
+    /^(?:the|this|that|our|my|your|his|her|their)\s+(?:guest|visitor)$/i.test(
+      cleaned
+    )
   ) {
     return null;
   }
@@ -199,7 +204,10 @@ function cleanAccessPersonName(raw: string): string | null {
  * Access request naming a person ("can Bob come up?", "send Sarah up").
  * Does not treat deictic the/our guest or trailing "please/still" as a name.
  */
-function accessPersonName(utterance: string): string | null {
+function accessPersonName(
+  utterance: string,
+  guest?: DeskGuestRef | null
+): string | null {
   const patterns = [
     /\b(?:can|could|may|should)\s+([A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+(?:come\s+up|go\s+up|come\s+in|enter)\b/i,
     /\b(?:send|let)\s+([A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+up\b/i,
@@ -208,7 +216,7 @@ function accessPersonName(utterance: string): string | null {
     const m = utterance.match(re);
     const raw = m?.[1]?.trim();
     if (!raw) continue;
-    const cleaned = cleanAccessPersonName(raw);
+    const cleaned = cleanAccessPersonName(raw, guest);
     if (cleaned) return cleaned;
   }
   return null;
@@ -219,7 +227,7 @@ function otherAccessPersonName(
   utterance: string,
   guest: DeskGuestRef | null
 ): string | null {
-  const raw = accessPersonName(utterance);
+  const raw = accessPersonName(utterance, guest);
   if (!raw) return null;
   if (guest && namesReferToSameGuest(raw, guest.name)) return null;
   return raw;
@@ -375,7 +383,7 @@ export function classifyDeskSubject(
       return { kind: "same_guest" };
     }
     // "Can Jane come up?" — access name matches active guest, no competitor.
-    const accessName = accessPersonName(u);
+    const accessName = accessPersonName(u, guest);
     if (
       accessName &&
       namesReferToSameGuest(accessName, guest.name) &&
