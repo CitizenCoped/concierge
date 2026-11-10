@@ -5,6 +5,7 @@ import {
   clarifySubjectPrompt,
   isWholeTurnHold,
   looksLikeCompetingCompanion,
+  looksLikePersonIntro,
   namesReferToSameGuest,
   stripHoldLead,
   type DeskSubject,
@@ -397,7 +398,9 @@ export function looksLikeGuestInfoFollowUp(
     state?.activeGuest &&
     subject.kind === "unrelated" &&
     (/\b(?:someone|somebody)\b/i.test(u) ||
-      /\b(?:this|that)\s+one\b/i.test(u) ||
+      /\b(?:(?:this|that)\s+(?:other\s+)?one|(?:the\s+)?other\s+one)\b/i.test(
+        u
+      ) ||
       (/\b(?:visitor|guest)\b/i.test(u) &&
         !/\b(?:the|this|that|my|our|his|her|their)\s+(?:guest|visitor)\b/i.test(
           u
@@ -1187,14 +1190,17 @@ async function handleClarifySubject(
       u
     );
 
-  // Companion / other-person replies ("it's her husband", "Jane's friend")
-  // must never confirm the prior guest — same fail-closed rule as INTENT.
+  // Companion / other-person / person-intro replies must never confirm the
+  // prior guest — same fail-closed rule as INTENT.
+  // "Yes I have a man here" / "Yeah there is a woman downstairs" → ASK_NAME.
   const companionOther = looksLikeCompetingCompanion(u);
+  const personIntroOther = looksLikePersonIntro(u);
 
   const aboutSame =
     !deniesKnownGuest &&
     !mentionsNew &&
     !companionOther &&
+    !personIntroOther &&
     (/\b(?:same|her|she|that (?:guest|visitor)|the (?:guest|visitor))\b/i.test(
       u
     ) ||
@@ -1205,6 +1211,7 @@ async function handleClarifySubject(
     deniesKnownGuest ||
     mentionsNew ||
     companionOther ||
+    personIntroOther ||
     (/^\s*(no|nope|nah)\b/i.test(u) && !aboutSame);
 
   if (aboutNew) {

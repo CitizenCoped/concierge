@@ -339,8 +339,24 @@ describe("classifyDeskSubject", () => {
       "Housekeeper here, can she come up?",
       "The housekeeper is here, can she come up?",
       "Nanny here, can she come up?",
+      "I have a nanny, can she come up?",
+      "There's a housekeeper, can she come up?",
+      "Housekeeper's here, can she come up?",
+      "Housekeeper, can she come up?",
+      "Nanny can she come up?",
+      "The cleaner wants to come up, can she?",
     ]) {
       expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
+    }
+  });
+
+  it("the other one / this other one clarifies (no Jane notes)", () => {
+    for (const u of [
+      "Is the other one allowed to come up?",
+      "Can this other one come up?",
+      "Should I let the other one in?",
+    ]) {
+      expect(classifyDeskSubject(u, jane).kind, u).toBe("clarify");
     }
   });
 

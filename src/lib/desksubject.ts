@@ -55,11 +55,25 @@ const ROLE_PERSON_RE =
   /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person)\b/i;
 
 /**
- * Vendor/role arrivals need presence framing — bare "housekeeper" in a notes
- * question about the admitted guest must not clear activeGuest.
+ * Vendor/role arrivals — presence framing, have/there's intro, or come-up
+ * access. Bare "Is the housekeeper allowed to park?" (notes about the admitted
+ * guest's role) must not clear activeGuest.
  */
-const ROLE_VENDOR_ARRIVAL_RE =
-  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:housekeeper|cleaner|nanny|babysitter|contractor|vendor)\b(?:\s+\w+){0,4}\s+(?:here|arrived|downstairs|upstairs|lobby|outside|waiting|inside|at the door|at the front desk)\b/i;
+const ROLE_VENDOR_NOUN =
+  "housekeeper|cleaner|nanny|babysitter|contractor|vendor";
+const ROLE_VENDOR_ARRIVAL_RE = new RegExp(
+  `\\b(?:` +
+    // "Housekeeper here" / "The housekeeper is here" / "Housekeeper's here"
+    `(?:(?:a|an|the|another|new|some)\\s+)?(?:${ROLE_VENDOR_NOUN})\\b(?:'s|\\s+is|\\s+are)?(?:\\s+\\w+){0,4}\\s+(?:here|arrived|downstairs|upstairs|lobby|outside|waiting|inside|at the door|at the front desk)` +
+    `|` +
+    // "I have a nanny" / "There's a housekeeper" — desk intro without location
+    `(?:got|have|there's|there is|i have|i'?ve got|we have)\\s+(?:an?\\s+)?(?:(?:another|new|some)\\s+)?(?:${ROLE_VENDOR_NOUN})\\b` +
+    `|` +
+    // "Housekeeper, can she come up?" / "The cleaner wants to come up"
+    `(?:(?:a|an|the|another|new|some)\\s+)?(?:${ROLE_VENDOR_NOUN})\\b[\\s\\S]{0,40}\\b(?:come up|go up|come in|send (?:her|him|them) up|let (?:her|him|them)(?:\\s+in)?|wants? to come)\\b` +
+    `)`,
+  "i"
+);
 
 const ADJ_GUEST_RE = new RegExp(
   `\\b(?:female|male|new)\\s+(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
@@ -453,8 +467,12 @@ export function classifyDeskSubject(
     return { kind: "new_arrival", named };
   }
 
-  // Demonstrative "this/that one" after a known guest — never reuse notes.
-  if (guest && /\b(?:this|that)\s+one\b/i.test(u) && isInfoSeeking(u)) {
+  // Demonstrative other person after a known guest — never reuse notes.
+  if (
+    guest &&
+    /\b(?:(?:this|that)\s+(?:other\s+)?one|(?:the\s+)?other\s+one)\b/i.test(u) &&
+    isInfoSeeking(u)
+  ) {
     return { kind: "clarify" };
   }
 

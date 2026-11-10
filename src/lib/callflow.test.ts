@@ -1694,13 +1694,17 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
-  it("this one / notes on Bob do not reuse Jane notes", async () => {
+  it("this/other one / notes on Bob do not reuse Jane notes", async () => {
     const { admitted, deps } = await admitJane();
     for (const u of [
       "Is this one allowed to come up?",
       "Should I let this one in?",
+      "Is the other one allowed to come up?",
+      "Can this other one come up?",
       "Did Bob leave instructions?",
       "Any notes on Bob?",
+      "Housekeeper, can she come up?",
+      "The cleaner wants to come up, can she?",
     ]) {
       let answeredFromNotes = false;
       const guarded = {
@@ -1714,6 +1718,41 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       const r = await step(admitted.nextState, u, guarded);
       expect(answeredFromNotes, u).toBe(false);
       expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+    }
+  });
+
+  it("clarify yes with person intro asks for new name (not Jane notes)", async () => {
+    const { admitted, deps } = await admitJane();
+    const clarified = await step(
+      admitted.nextState,
+      "He's downstairs, can he come up?",
+      {
+        ...deps,
+        answerGuestInfo: async () => {
+          throw new Error("should clarify first");
+        },
+      }
+    );
+    expect(clarified.nextState.phase).toBe("CLARIFY_SUBJECT");
+    for (const u of [
+      "Yes I have a man here",
+      "Yes, a delivery person is here",
+      "Yeah there is a woman downstairs",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        matchGuest: async () => ({ match: null, candidates: [] }),
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(clarified.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(r.nextState.phase, u).toBe("ASK_NAME");
+      expect(r.nextState.activeGuest, u).toBeNull();
     }
   });
 
