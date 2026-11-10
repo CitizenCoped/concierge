@@ -1488,6 +1488,9 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       "There's a man at the door, can he come up?",
       "I have a delivery person here, can they come up?",
       "There's a female visitor downstairs asking for access",
+      "I have a female guest here, can she come up?",
+      "Guest in the lobby wants to come up",
+      "Visitor downstairs asking for access",
     ]) {
       let answeredFromNotes = false;
       const guarded = {
@@ -1503,5 +1506,92 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       expect(r.nextState.activeGuest, u).toBeNull();
       expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
     }
+  });
+
+  it("clarify denials / yes-someone-new clear Jane (never forceSameGuest)", async () => {
+    const { admitted, deps } = await admitJane();
+    const ask = await step(
+      admitted.nextState,
+      "He's downstairs, can he come up?",
+      deps
+    );
+    expect(ask.nextState.phase).toBe("CLARIFY_SUBJECT");
+
+    for (const reply of [
+      "not her",
+      "not Jane",
+      "no it's not her",
+      "yes, someone new",
+      "Right, someone else",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(ask.nextState, reply, guarded);
+      expect(answeredFromNotes, reply).toBe(false);
+      expect(r.nextState.phase, reply).toBe("ASK_NAME");
+      expect(r.nextState.activeGuest, reply).toBeNull();
+      expect(notifyEvents(r.effects), reply).not.toContain(
+        "guest.info_answered"
+      );
+    }
+  });
+
+  it("someone + instructions for her keeps Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    const r = await step(
+      admitted.nextState,
+      "Did someone leave instructions for her?",
+      deps
+    );
+    expect(r.nextState.phase).not.toBe("ASK_NAME");
+    expect(r.nextState.activeGuest?.name).toBe("Jane McDaniel");
+    expect(notifyEvents(r.effects)).toContain("guest.info_answered");
+  });
+
+  it("CONFIRM_MESSAGE routes clarify subjects after finalize", async () => {
+    const { admitted, deps } = await admitJane();
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
+    const r = await step(
+      {
+        phase: "CONFIRM_MESSAGE",
+        messageParts: ["Please call about the package"],
+        activeGuest: admitted.nextState.activeGuest,
+      },
+      "He's downstairs, can he come up?",
+      guarded
+    );
+    expect(answeredFromNotes).toBe(false);
+    expect(notifyEvents(r.effects)).toContain("message.taken");
+    expect(r.nextState.phase).toBe("CLARIFY_SUBJECT");
+    expect(r.nextState.activeGuest?.name).toBe("Jane McDaniel");
+    expect(r.nextState.pendingUtterance).toMatch(/downstairs/i);
+  });
+
+  it("someone-new with unmatched name still clears Jane", async () => {
+    const { admitted, deps } = await admitJane();
+    const ask = await step(
+      admitted.nextState,
+      "They're waiting outside, can they park?",
+      deps
+    );
+    const r = await step(ask.nextState, "No, this is Bob Smith", {
+      ...deps,
+      matchGuest: async () => ({ match: null, candidates: [] }),
+    });
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeNull();
   });
 });

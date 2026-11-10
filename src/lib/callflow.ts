@@ -1043,10 +1043,25 @@ async function handleIntent(
 
   // Visitor arrivals that didn't trip the classifier (rare) —
   // still prefer match / ask-name over blind transfer when framed as a visitor.
+  // If a different name is spoken while a prior guest is active, clear first
+  // so a miss cannot leave Jane in place for later "can she…?" notes answers.
   if (VISITOR_RE.test(utterance) && !PACKAGE_RE.test(utterance)) {
     const name = extractName(utterance);
     if (name) {
-      return matchAndRespond(name, deps, { denyOnMiss: false, state });
+      const prior = state?.activeGuest;
+      const clearPrior =
+        prior != null && !namesMatchGuest(name, prior.name);
+      return matchAndRespond(name, deps, {
+        denyOnMiss: false,
+        state: clearPrior
+          ? {
+              phase: "INTENT",
+              activeGuest: null,
+              guestSnapshot: state?.guestSnapshot,
+              messageSaved: state?.messageSaved,
+            }
+          : state,
+      });
     }
     if (!state?.activeGuest) {
       return {
@@ -1080,24 +1095,54 @@ async function handleClarifySubject(
   const guestName = guest?.name ?? "";
   const first =
     guestName.split(/\s+/)[0]?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "";
-  const aboutSame =
-    /\b(?:same|her|she|that (?:guest|visitor)|the (?:guest|visitor))\b/i.test(
+
+  // Rejecting the known guest (or picking "someone new") wins over incidental
+  // her/name/yes matches in the same turn ("not her", "yes, someone new").
+  const deniesKnownGuest =
+    /\b(?:not|isn'?t|is not|ain'?t)\s+(?:her|she|him|them)\b/i.test(u) ||
+    /\b(?:not|isn'?t|is not|ain'?t)\s+(?:the|that)\s+(?:guest|visitor)\b/i.test(
       u
     ) ||
-    (first && new RegExp(`\\b${first}\\b`, "i").test(u)) ||
-    /^\s*(yes|yeah|yep|yup|correct|right)\b/i.test(u);
-
-  const aboutNew =
+    (Boolean(first) &&
+      new RegExp(`\\b(?:not|isn'?t|is not|ain'?t)\\s+${first}\\b`, "i").test(u));
+  const mentionsNew =
     /\b(?:someone new|somebody new|new (?:guest|visitor|person)|different|another|someone else|somebody else)\b/i.test(
       u
-    ) || /^\s*(no|nope|nah)\b/i.test(u);
+    );
 
-  if (aboutNew && !aboutSame) {
-    const name = extractName(u);
-    if (name && guest && !namesMatchGuest(name, guest.name)) {
+  const aboutSame =
+    !deniesKnownGuest &&
+    !mentionsNew &&
+    (/\b(?:same|her|she|that (?:guest|visitor)|the (?:guest|visitor))\b/i.test(
+      u
+    ) ||
+      (Boolean(first) && new RegExp(`\\b${first}\\b`, "i").test(u)) ||
+      /^\s*(yes|yeah|yep|yup|correct|right)\b/i.test(u));
+
+  const aboutNew =
+    deniesKnownGuest ||
+    mentionsNew ||
+    (/^\s*(no|nope|nah)\b/i.test(u) && !aboutSame);
+
+  if (aboutNew) {
+    // Always clear prior guest when the desk picks "someone new".
+    const clearedState: CallState = {
+      phase: "INTENT",
+      activeGuest: null,
+      guestSnapshot: state.guestSnapshot,
+      messageSaved: state.messageSaved,
+    };
+    // Denial debris ("no it's not her") can look like a spoken name — skip it.
+    const name = deniesKnownGuest ? null : extractName(u);
+    if (
+      name &&
+      guest &&
+      !namesMatchGuest(name, guest.name) &&
+      !isRoleOrDebrisName(name)
+    ) {
       return matchAndRespond(name, deps, {
         denyOnMiss: false,
-        state: { ...state, pendingUtterance: undefined },
+        state: clearedState,
       });
     }
     return {
@@ -1352,11 +1397,12 @@ export async function step(
         };
       }
 
-      // Continued guest question / new arrival / connect after leaving a message:
-      // finalize the message once, then handle the new intent without hangup.
+      // Continued guest question / clarify subject / new arrival / connect after
+      // leaving a message: finalize once, then handle the new intent (no hangup).
       if (
         looksLikeGuestInfoFollowUp(utterance, state) ||
         looksLikeNewVisitorAnnouncement(utterance, state) ||
+        deskSubjectFor(utterance, state).kind === "clarify" ||
         detectExplicitTransfer(utterance) ||
         (VISITOR_RE.test(utterance) && extractName(utterance))
       ) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyDeskSubject,
   isWholeTurnHold,
+  looksLikePersonIntro,
   stripHoldLead,
 } from "./desksubject";
 
@@ -25,6 +26,16 @@ describe("classifyDeskSubject", () => {
         spokenName: "Jane",
       }).kind
     ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("I also have a question about the guest", jane).kind
+    ).toBe("same_guest");
+  });
+
+  it("same guest: someone + instructions for her (not an arrival)", () => {
+    expect(
+      classifyDeskSubject("Did someone leave instructions for her?", jane)
+        .kind
+    ).toBe("same_guest");
   });
 
   it("new arrival: someone else, person nouns, indefinite someone", () => {
@@ -35,7 +46,10 @@ describe("classifyDeskSubject", () => {
       "There's a man at the door, can he come up?",
       "I have a delivery person here, can they come up?",
       "There's a female visitor downstairs",
+      "I have a female guest here, can she come up?",
       "I have a delivery here, can they come up?",
+      "Guest in the lobby wants to come up",
+      "Visitor downstairs asking for access",
     ]) {
       expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
     }
@@ -49,6 +63,13 @@ describe("classifyDeskSubject", () => {
       classifyDeskSubject("They're waiting outside, can they park?", jane)
         .kind
     ).toBe("clarify");
+    // the/this + location is ambiguous after a known guest — clarify, not notes
+    expect(
+      classifyDeskSubject(
+        "The visitor is downstairs, can they come up?",
+        jane
+      ).kind
+    ).toBe("clarify");
   });
 
   it("visitor parking compound is not a new person", () => {
@@ -59,6 +80,17 @@ describe("classifyDeskSubject", () => {
     expect(
       classifyDeskSubject("Can she use the visitor pass?", jane).kind
     ).toBe("same_guest");
+  });
+
+  it("looksLikePersonIntro covers descriptive and bare lobby arrivals", () => {
+    expect(looksLikePersonIntro("I have a female guest here")).toBe(true);
+    expect(looksLikePersonIntro("Guest in the lobby wants to come up")).toBe(
+      true
+    );
+    expect(looksLikePersonIntro("Does she have visitor parking?")).toBe(false);
+    expect(
+      looksLikePersonIntro("I also have a question about the guest")
+    ).toBe(false);
   });
 });
 

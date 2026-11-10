@@ -7,9 +7,16 @@
  * - clarify: activeGuest is set but reference is ambiguous — ask, never answer
  *   from prior notes and never invent permissions for an unnamed person
  * - unrelated: not a guest-subject / arrival turn (packages, etc. handled elsewhere)
+ *
+ * Prefer ask-over-guess. Avoid stacking unrelated phrase lists: use structural
+ * cues (person intro, location arrival, deixis, pronouns) with fail-closed ties.
  */
 
-export type DeskSubjectKind = "same_guest" | "new_arrival" | "clarify" | "unrelated";
+export type DeskSubjectKind =
+  | "same_guest"
+  | "new_arrival"
+  | "clarify"
+  | "unrelated";
 
 export type DeskSubject =
   | { kind: "same_guest" }
@@ -23,14 +30,49 @@ export type DeskGuestRef = { name: string };
 const EXPLICIT_OTHER_RE =
   /\b(?:another (?:guest|visitor|person)|someone else|somebody else|different (?:guest|visitor|person)|new (?:guest|visitor)|also (?:have|got)\s+(?:an?\s+)?(?:guest|visitor|someone|somebody)|one more (?:guest|visitor|person)|second (?:guest|visitor))\b/i;
 
+/** Compound nouns that look like "visitor …" but are not a person. */
+const VISITOR_NONPERSON_TAIL =
+  "(?:parking|pass|spot|space|permit|sticker|badge)";
+
 /**
- * Introduces a person entity (not compound "visitor parking").
- * Covers security cases: man at the door, delivery person, female visitor.
+ * Structural person introduction — not an open-ended phrase list.
+ * - Role nouns (man/woman/delivery person/…)
+ * - Optional short adjective before guest/visitor (female guest, new visitor)
+ * - have/got/there's + (adj?) guest/visitor (excluding visitor parking)
+ * - Bare guest/visitor + location (excluding "the/this guest" deixis)
  */
-const PERSON_INTRO_RE =
-  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person|female\s+visitor|male\s+visitor)\b|\b(?:got|have|there's|there is|i have|i'?ve got|we have)\s+(?:an?\s+)?(?:visitor|guest)\b(?!\s+(?:parking|pass|spot|space|permit|sticker|badge))\b|\b(?:a|an|another|new)\s+(?:visitor|guest)\b(?!\s+(?:parking|pass|spot|space|permit|sticker|badge))\b/i;
+const ROLE_PERSON_RE =
+  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person)\b/i;
+
+const ADJ_GUEST_RE = new RegExp(
+  `\\b(?:female|male|new)\\s+(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
+  "i"
+);
+
+const HAVE_GUEST_RE = new RegExp(
+  `\\b(?:got|have|there's|there is|i have|i'?ve got|we have)\\s+(?:an?\\s+)?(?:(?!question|package|delivery|update|message|note)\\w+\\s+){0,2}(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
+  "i"
+);
+
+const ARTICLE_GUEST_RE = new RegExp(
+  `\\b(?:a|an|another|new)\\s+(?:(?!question)\\w+\\s+){0,1}(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
+  "i"
+);
+
+/** "Guest in the lobby…" / "Visitor downstairs…" — not "the/this guest". */
+const BARE_GUEST_LOCATION_RE = new RegExp(
+  `(?<!\\b(?:the|this)\\s)\\b(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b(?:\\s+\\w+){0,4}\\s+(?:in\\s+the\\s+(?:lobby|building)|at\\s+the\\s+(?:door|front\\s+desk)|downstairs|lobby|outside|waiting|here|asking)\\b`,
+  "i"
+);
 
 const INDEFINITE_SOMEONE_RE = /\b(?:someone|somebody)\b/i;
+
+/**
+ * Location / presence / access-request cues for indefinite "someone".
+ * Deliberately narrower than general info keywords (instructions, parking Qs).
+ */
+const SOMEONE_ARRIVAL_RE =
+  /\b(?:downstairs|lobby|front desk|(?:at the )?door|outside|waiting|here|arrived|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|access|enter|entry)\b/i;
 
 const ACCESS_OR_INFO_RE =
   /\?|\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|downstairs|lobby|front desk|door|outside|waiting)\b/i;
@@ -38,6 +80,8 @@ const ACCESS_OR_INFO_RE =
 const SAME_PRONOUN_RE = /\b(?:she|her)\b/i;
 const OTHER_PRONOUN_RE = /\b(?:he|him|they|them)\b/i;
 const THE_GUEST_RE = /\b(?:the|this)\s+(?:guest|visitor)\b/i;
+const LOCATION_RE =
+  /\b(?:downstairs|lobby|front desk|at the door|outside|waiting|arrived|here)\b/i;
 
 function namesMatch(spoken: string, guestName: string): boolean {
   const g = guestName.trim().toLowerCase();
@@ -51,6 +95,18 @@ function namesMatch(spoken: string, guestName: string): boolean {
 
 function isInfoSeeking(utterance: string): boolean {
   return ACCESS_OR_INFO_RE.test(utterance);
+}
+
+/** High-confidence structural cue that a person is being introduced. */
+export function looksLikePersonIntro(utterance: string): boolean {
+  const u = utterance.trim();
+  return (
+    ROLE_PERSON_RE.test(u) ||
+    ADJ_GUEST_RE.test(u) ||
+    HAVE_GUEST_RE.test(u) ||
+    ARTICLE_GUEST_RE.test(u) ||
+    BARE_GUEST_LOCATION_RE.test(u)
+  );
 }
 
 export interface ClassifyDeskSubjectOpts {
@@ -72,15 +128,30 @@ export function classifyDeskSubject(
 
   const guest = activeGuest ?? null;
   const named = opts.spokenName?.trim() || null;
+  const personIntro = looksLikePersonIntro(u);
 
   // --- High-confidence NEW ARRIVAL ---
   if (EXPLICIT_OTHER_RE.test(u)) {
     return { kind: "new_arrival", named };
   }
-  if (INDEFINITE_SOMEONE_RE.test(u) && isInfoSeeking(u)) {
+
+  // Indefinite someone: only when paired with arrival/presence/access-request.
+  // "Did someone leave instructions for her?" stays same-guest via she/her.
+  if (INDEFINITE_SOMEONE_RE.test(u) && SOMEONE_ARRIVAL_RE.test(u)) {
+    // If the turn also clearly continues the known guest (she/her) without a
+    // competing person intro, prefer same_guest over clearing.
+    if (
+      guest &&
+      SAME_PRONOUN_RE.test(u) &&
+      !personIntro &&
+      !EXPLICIT_OTHER_RE.test(u)
+    ) {
+      return { kind: "same_guest" };
+    }
     return { kind: "new_arrival", named };
   }
-  // Delivery/package at the door asking to come up — person, not leave-a-package note.
+
+  // Delivery/package at the door asking to come up — person, not leave-a-package.
   if (
     /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:a\s+)?(?:delivery|package|parcel)\s+here\b/i.test(
       u
@@ -91,24 +162,18 @@ export function classifyDeskSubject(
   ) {
     return { kind: "new_arrival", named };
   }
-  if (
-    PERSON_INTRO_RE.test(u) &&
-    !(guest && named && namesMatch(named, guest.name))
-  ) {
+
+  if (personIntro && !(guest && named && namesMatch(named, guest.name))) {
     return { kind: "new_arrival", named };
   }
 
-  // A spoken name alone is NOT enough for new_arrival — STT/grammar debris
-  // ("use visitor", "female visitor") and bare permission questions
-  // ("Is Jane allowed…?") must not clear a known guest or skip Guest Info.
-  // Require arrival / person-intro / someone-else framing (already handled
-  // above) OR an explicit other-person name *with* arrival-ish context.
+  // A spoken name alone is NOT enough for new_arrival — need arrival context.
   const arrivalContext =
     EXPLICIT_OTHER_RE.test(u) ||
-    PERSON_INTRO_RE.test(u) ||
+    personIntro ||
     INDEFINITE_SOMEONE_RE.test(u) ||
     /\b(?:i have|i'?ve got|we have|there is|there'?s|got)\b/i.test(u) ||
-    /\b(?:downstairs|lobby|front desk|at the door|waiting|arrived)\b/i.test(u);
+    LOCATION_RE.test(u);
 
   if (named && guest && !namesMatch(named, guest.name) && arrivalContext) {
     return { kind: "new_arrival", named };
@@ -125,24 +190,30 @@ export function classifyDeskSubject(
     // she/her continuity without a competing person intro
     if (
       SAME_PRONOUN_RE.test(u) &&
-      !PERSON_INTRO_RE.test(u) &&
+      !personIntro &&
       !EXPLICIT_OTHER_RE.test(u)
     ) {
       return { kind: "same_guest" };
     }
+    // "the/this guest" deixis — same guest ONLY when not arrival-framed.
+    // "The visitor is downstairs, can they come up?" is ambiguous → clarify.
     if (
       THE_GUEST_RE.test(u) &&
       !EXPLICIT_OTHER_RE.test(u) &&
-      !PERSON_INTRO_RE.test(u)
+      !personIntro &&
+      !(LOCATION_RE.test(u) && isInfoSeeking(u))
     ) {
       return { kind: "same_guest" };
     }
   }
 
   // --- AMBIGUOUS with a known guest in play ---
-  // e.g. he/they location+access after Jane was admitted — do NOT reuse notes.
   if (guest && isInfoSeeking(u)) {
     if (OTHER_PRONOUN_RE.test(u) && !SAME_PRONOUN_RE.test(u)) {
+      return { kind: "clarify" };
+    }
+    // the/this guest + location/access after a known guest → clarify
+    if (THE_GUEST_RE.test(u) && LOCATION_RE.test(u)) {
       return { kind: "clarify" };
     }
     if (
@@ -155,7 +226,7 @@ export function classifyDeskSubject(
     }
   }
 
-  // Unnamed arrival framing with no active guest → treat as new arrival (ask name).
+  // Unnamed arrival framing with no active guest → treat as new arrival.
   if (
     !guest &&
     /\b(?:i have|i'?ve got|we have|there is|there'?s)\s+(?:an?\s+)?(?:visitor|guest)\b/i.test(
