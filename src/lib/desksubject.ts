@@ -52,7 +52,14 @@ const DEICTIC_DET = "the|this|that|my|our|his|her|their";
  * - there is / I have + entity at a desk location (incl. "here")
  */
 const ROLE_PERSON_RE =
-  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person|housekeeper|cleaner|nanny|babysitter|contractor|vendor)\b/i;
+  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person)\b/i;
+
+/**
+ * Vendor/role arrivals need presence framing — bare "housekeeper" in a notes
+ * question about the admitted guest must not clear activeGuest.
+ */
+const ROLE_VENDOR_ARRIVAL_RE =
+  /\b(?:(?:a|an|the|another|new|some)\s+)?(?:housekeeper|cleaner|nanny|babysitter|contractor|vendor)\b(?:\s+\w+){0,4}\s+(?:here|arrived|downstairs|upstairs|lobby|outside|waiting|inside|at the door|at the front desk)\b/i;
 
 const ADJ_GUEST_RE = new RegExp(
   `\\b(?:female|male|new)\\s+(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
@@ -154,6 +161,7 @@ export function looksLikePersonIntro(utterance: string): boolean {
   const u = utterance.trim();
   return (
     ROLE_PERSON_RE.test(u) ||
+    ROLE_VENDOR_ARRIVAL_RE.test(u) ||
     ADJ_GUEST_RE.test(u) ||
     HAVE_GUEST_RE.test(u) ||
     ARTICLE_GUEST_RE.test(u) ||
@@ -445,6 +453,11 @@ export function classifyDeskSubject(
     return { kind: "new_arrival", named };
   }
 
+  // Demonstrative "this/that one" after a known guest — never reuse notes.
+  if (guest && /\b(?:this|that)\s+one\b/i.test(u) && isInfoSeeking(u)) {
+    return { kind: "clarify" };
+  }
+
   // Competing other person named for access ("can Bob come up?") while a
   // prior guest is active — treat as new arrival, never reuse notes.
   const otherAccess = guest ? otherAccessPersonName(u, guest) : null;
@@ -466,9 +479,13 @@ export function classifyDeskSubject(
   // Non-deictic visitor/guest + access/permission after a known guest —
   // never reuse notes ("Visitor for the unit").
   // Amenity compounds (guest/visitor pass/parking/…) are not arrivals.
-  // "I have a guest parking…" is person+verb arrival — keep fail-closed.
+  // Person+verb arrival only when parking is not an amenity tail
+  // (pass/spot/…) and not a bare "have guest parking?" question.
   const guestParkingArrival =
-    /\b(?:i have|i'?ve got|we have|there is|there'?s|got)\s+(?:an?\s+)?(?:visitor|guest)\s+parking\b/i.test(
+    /\b(?:i have|i'?ve got|we have|there is|there'?s|got)\s+(?:an?\s+)?(?:visitor|guest)\s+parking\b(?!\s*(?:pass|spot|space|permit|sticker|badge|available)\b)/i.test(
+      u
+    ) &&
+    /\b(?:come up|go up|come in|who|here|downstairs|lobby|outside|waiting|garage|at the door|in the)\b/i.test(
       u
     );
   const amenityCompound =

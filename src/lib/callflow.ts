@@ -302,6 +302,14 @@ const QUESTION_NAME_PATTERNS: RegExp[] = [
     `\\b(?:what|how)\\s+(?:should I|do I|to)\\s+(?:tell|leave|give)\\s+(?:for\\s+)?(${NAME})\\b`,
     "i"
   ),
+  new RegExp(
+    `\\b(?:did|does|has|have)\\s+(${NAME})\\s+(?:leave|left|give|say|call|ask)`,
+    "i"
+  ),
+  new RegExp(
+    `\\b(?:any\\s+)?(?:notes?|instructions?|info(?:rmation)?)\\s+(?:on|for|about)\\s+(${NAME})\\b`,
+    "i"
+  ),
 ];
 
 /** Guest-name candidates from questions — reject STT/grammar filler tokens. */
@@ -389,6 +397,7 @@ export function looksLikeGuestInfoFollowUp(
     state?.activeGuest &&
     subject.kind === "unrelated" &&
     (/\b(?:someone|somebody)\b/i.test(u) ||
+      /\b(?:this|that)\s+one\b/i.test(u) ||
       (/\b(?:visitor|guest)\b/i.test(u) &&
         !/\b(?:the|this|that|my|our|his|her|their)\s+(?:guest|visitor)\b/i.test(
           u
@@ -400,8 +409,18 @@ export function looksLikeGuestInfoFollowUp(
     return false;
   }
 
+  const spokenForInfo = extractQuestionGuestName(u);
+  // Competing other name vs activeGuest — never answer from prior notes.
+  if (
+    state?.activeGuest &&
+    spokenForInfo &&
+    !namesReferToSameGuest(spokenForInfo, state.activeGuest.name)
+  ) {
+    return false;
+  }
+
   const hasGuestContext =
-    Boolean(state?.activeGuest) || Boolean(extractQuestionGuestName(u));
+    Boolean(state?.activeGuest) || Boolean(spokenForInfo);
   const infoSeeking =
     /\?/.test(u) ||
     QUESTION_SHAPE_RE.test(u) ||
@@ -909,22 +928,28 @@ async function tryGuestInfoAnswer(
   if (opts.forceSameGuest && !state?.activeGuest) return null;
 
   let guest: ActiveGuest | null = null;
-  const spokenName = extractQuestionGuestName(utterance);
-  if (spokenName) {
-    try {
-      const matched = await deps.matchGuest(spokenName);
-      if (matched.match) guest = asActiveGuest(matched.match);
-      else return null; // named someone not on the active list → not notes Q&A
-    } catch {
-      return offerConnect(
-        "I'm having trouble checking the guest notes.",
-        state
-      );
-    }
-  } else if (state?.activeGuest) {
-    guest = state.activeGuest;
+  // After an explicit clarify confirmation, always bind the confirmed guest —
+  // never re-match a competing name still present in the pending utterance.
+  if (opts.forceSameGuest) {
+    guest = state!.activeGuest!;
   } else {
-    return null;
+    const spokenName = extractQuestionGuestName(utterance);
+    if (spokenName) {
+      try {
+        const matched = await deps.matchGuest(spokenName);
+        if (matched.match) guest = asActiveGuest(matched.match);
+        else return null; // named someone not on the active list → not notes Q&A
+      } catch {
+        return offerConnect(
+          "I'm having trouble checking the guest notes.",
+          state
+        );
+      }
+    } else if (state?.activeGuest) {
+      guest = state.activeGuest;
+    } else {
+      return null;
+    }
   }
 
   const info = guest.guest_info?.trim() ?? "";

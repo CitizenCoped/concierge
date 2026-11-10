@@ -1694,6 +1694,64 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
+  it("this one / notes on Bob do not reuse Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "Is this one allowed to come up?",
+      "Should I let this one in?",
+      "Did Bob leave instructions?",
+      "Any notes on Bob?",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        matchGuest: async () => ({ match: null, candidates: [] }),
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+    }
+  });
+
+  it("clarify yes after Bob question keeps Jane notes (forceSameGuest)", async () => {
+    const bob = guest("Bob Smith", "Bob may use the garage.");
+    const { admitted, deps } = await admitJane();
+    const pending = await step(admitted.nextState, "What time is Bob expected?", {
+      ...deps,
+      matchGuest: async (name: string) =>
+        /bob/i.test(name)
+          ? { match: bob, candidates: [bob] }
+          : { match: null, candidates: [] },
+      answerGuestInfo: async () => {
+        throw new Error("should clarify first");
+      },
+    });
+    // May clarify or ask-name; if clarify, yes must keep Jane.
+    if (pending.nextState.phase === "CLARIFY_SUBJECT") {
+      let boundName = "";
+      const r = await step(pending.nextState, "Yes", {
+        ...deps,
+        matchGuest: async (name: string) =>
+          /bob/i.test(name)
+            ? { match: bob, candidates: [bob] }
+            : { match: null, candidates: [] },
+        answerGuestInfo: async (input) => {
+          boundName = input.guestName;
+          return {
+            answer: "unclear" as const,
+            reply: "",
+          };
+        },
+      });
+      expect(boundName).toBe("Jane McDaniel");
+      expect(r.nextState.activeGuest?.name).toBe("Jane McDaniel");
+    }
+  });
+
   it("clarify reply naming her husband does not reuse Jane notes", async () => {
     const { admitted, deps } = await admitJane();
     const clarified = await step(

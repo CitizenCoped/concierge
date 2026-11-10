@@ -313,6 +313,16 @@ describe("classifyDeskSubject", () => {
     expect(
       classifyDeskSubject("Does she have a guest parking pass?", jane).kind
     ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Do we have guest parking available for her?", jane)
+        .kind
+    ).toBe("same_guest");
+  });
+
+  it("bare housekeeper mention without arrival framing is not new_arrival", () => {
+    expect(
+      classifyDeskSubject("Is the housekeeper allowed to park?", jane).kind
+    ).not.toBe("new_arrival");
   });
 
   it("calendar date of phrases are not companion new arrivals", () => {
