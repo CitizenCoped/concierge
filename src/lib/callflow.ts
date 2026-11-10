@@ -4,6 +4,7 @@ import {
   classifyDeskSubject,
   clarifySubjectPrompt,
   isWholeTurnHold,
+  namesReferToSameGuest,
   stripHoldLead,
   type DeskSubject,
 } from "./desksubject";
@@ -150,18 +151,22 @@ const FACTUAL_FOLLOWUP_RE =
 const TRANSFER_NEGATION_RE =
   /\b((do\s*n[o’']?t|does\s*n[o’']?t|did\s*n[o’']?t|never)\b.{0,40}\b(connect|transfer|put me|put us|call|ring)\b|\bno\b[,.]?\s+(thanks?|thank you)?[,.]?\s*((do\s*n[o’']?t|does\s*n[o’']?t)\s+)?(connect|transfer|put)|(?:don'?t|do not)\s+(connect|transfer)\s+me\s+to\s+(scott|monica)|no[,.]?.{0,24}(connect|transfer).{0,16}(scott|monica))/i;
 
-// Name tokens only — no periods/location words — so
+// Name tokens only — no periods/location/stop words — so
 // "Sarah Connor. Is she allowed…" and "John Smith here in the lobby" stay clean.
+// Stop words prevent "guest is in the lobby" from capturing "in the" as a name.
+// guest/visitor stay allowed as later name tokens ("Test Visitor") but
+// plausibleName rejects names that *start* with those words.
 const NAME_PART =
-  "(?!here|there|waiting|downstairs|lobby|named|called)[A-Za-z][A-Za-z'’-]*";
+  "(?!here|there|waiting|downstairs|lobby|named|called|in|the|a|an|to|for|at|of|with|and|or|from|on|by|my|our|your|this|that|they|them|she|he|her|his|him|their)[A-Za-z][A-Za-z'’-]*";
 const NAME = `${NAME_PART}(?:\\s+${NAME_PART}){0,3}`;
 const NAME_PATTERNS: RegExp[] = [
   new RegExp(
-    `(?:i (?:also )?have|i've got|we have|there is|there's)\\s+(?:an?\\s+)?(?:visitor|guest)?\\s*(?:named|called|name is)?\\s*(${NAME})\\s+(?:here|in the lobby|at the front desk|downstairs|for you|to see|waiting)`,
+    `(?:i (?:also )?have|i've got|we have|there is|there's)\\s+(?:an?\\s+)?(?:visitor|guest)?\\s*(?:named|called|name is)?\\s*(${NAME})\\s+(?:here|in the lobby|at the front desk|at the door|downstairs|for you|to see|waiting)`,
     "i"
   ),
+  // Require named/called/name is — bare "guest is …" is deixis, not a name cue.
   new RegExp(
-    `(?:visitor|guest)\\s+(?:named|called|name is|is)\\s+(?:an?\\s+|the\\s+)?(${NAME})\\b`,
+    `(?:visitor|guest)\\s+(?:named|called|name is)\\s+(?:an?\\s+|the\\s+)?(${NAME})\\b`,
     "i"
   ),
   new RegExp(
@@ -169,7 +174,12 @@ const NAME_PATTERNS: RegExp[] = [
     "i"
   ),
   new RegExp(
-    `^(${NAME})\\s+is\\s+(?:here|in the lobby|at the front desk|downstairs|waiting)`,
+    `^(${NAME})\\s+is\\s+(?:here|in the lobby|at the front desk|at the door|downstairs|waiting|outside)`,
+    "i"
+  ),
+  // Mid-utterance: "Sarah Connor is at the door, can she come up?"
+  new RegExp(
+    `\\b(${NAME})\\s+is\\s+(?:here|in the lobby|at the front desk|at the door|downstairs|waiting|outside)\\b`,
     "i"
   ),
 ];
@@ -191,6 +201,8 @@ function plausibleName(candidate: string | undefined): string | null {
   // word (the acceptance-test guest is literally called "Test Visitor")
   if (/\b(front desk|lobby|package|delivery)\b/i.test(c)) return null;
   if (/^(visitor|guest)\b/i.test(c)) return null; // "visitor John" is phrasing debris
+  // Deictic "our/my/your guest" is never a person name.
+  if (/^(my|our|your|this|that)\s+(guest|visitor)\b/i.test(c)) return null;
   // "another guest" / "someone else" captured by NAME patterns are not people.
   // Do not reject real names that merely start with Other (fixture: "Other Person").
   if (/^(another|someone|somebody)\b/i.test(c)) return null;
@@ -199,11 +211,22 @@ function plausibleName(candidate: string | undefined): string | null {
   }
   // Role / demographic labels are never visitor names.
   if (
-    /^(man|woman|guy|lady|gentleman|person|courier|driver|female|male)(\s|$)/i.test(
+    /^(man|woman|guy|lady|gentleman|person|courier|driver|female|male|housekeeper|cleaner)(\s|$)/i.test(
       c
     ) ||
     /^(female|male)\s+(visitor|guest)\b/i.test(c) ||
     /^delivery(\s+person)?\b/i.test(c)
+  ) {
+    return null;
+  }
+  // Reject multi-token captures that are mostly stop words ("in the").
+  const parts = c.split(/\s+/);
+  if (
+    parts.every((p) =>
+      /^(a|an|the|in|to|for|at|of|with|and|or|from|on|by|my|our|your|this|that)$/i.test(
+        p
+      )
+    )
   ) {
     return null;
   }
@@ -1218,13 +1241,7 @@ async function handleClarifySubject(
 }
 
 function namesMatchGuest(spoken: string, guestName: string): boolean {
-  const g = guestName.trim().toLowerCase();
-  const s = spoken.trim().toLowerCase();
-  if (!g || !s) return false;
-  if (g === s) return true;
-  const gFirst = g.split(/\s+/)[0] ?? "";
-  const sFirst = s.split(/\s+/)[0] ?? "";
-  return Boolean(gFirst && sFirst && gFirst === sFirst);
+  return namesReferToSameGuest(spoken, guestName);
 }
 
 export async function step(

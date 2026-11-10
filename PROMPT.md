@@ -248,15 +248,21 @@ States & behavior:
      treat as approval or hangup. Only route to a target whose phone env var
      is set — never silently remap Monica → Scott.
    - **Desk subject** (conservative, deterministic — prefer ask over guess):
-     - high-confidence **same guest** (named active guest, she/her, "the
-       guest") → Guest Info notes
-     - high-confidence **new arrival** (someone/somebody + access, person
-       nouns like man/woman/delivery person/visitor except "visitor
-       parking", explicit someone-else) → ASK_NAME / match; clear
-       `activeGuest`; **never** invent permissions for an unnamed person
-     - **ambiguous** with an active guest (e.g. he/they location+access
-       after Jane) → **CLARIFY_SUBJECT** ("Is this about {guest}, or
-       someone new?") — do **not** answer from prior notes until confirmed
+     - high-confidence **same guest** (unambiguous name match to
+       `activeGuest`, she/her with no competing person intro, deictic
+       the/our/my guest + she/her) → Guest Info notes
+     - high-confidence **new arrival** (someone/somebody + info/access
+       e.g. parking, person nouns like man/woman/delivery
+       person/housekeeper/visitor except "visitor parking", named
+       different person at the door, explicit someone-else) → ASK_NAME /
+       match; clear `activeGuest`; **never** invent permissions for an
+       unnamed person. Reuse of `activeGuest` requires a full unambiguous
+       name match (first-name-only OK; conflicting surname e.g. Jane Smith
+       ≠ Jane McDaniel is **not** the same guest).
+     - **ambiguous** with an active guest (e.g. he/they location+access,
+       mixed he+her, after Jane) → **CLARIFY_SUBJECT** ("Is this about
+       {guest}, or someone new?") — do **not** answer from prior notes
+       until confirmed. she/her alone never wins over a new-person intro.
    - visitor announcement → ASK_NAME (or extract name directly if spoken)
    - Guest Info follow-up about a named **or previously identified** active
      guest → answer strictly from `guest_info` via AI Gateway. Covers

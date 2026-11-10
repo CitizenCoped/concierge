@@ -3,10 +3,21 @@ import {
   classifyDeskSubject,
   isWholeTurnHold,
   looksLikePersonIntro,
+  namesReferToSameGuest,
   stripHoldLead,
 } from "./desksubject";
 
 const jane = { name: "Jane McDaniel" };
+
+describe("namesReferToSameGuest", () => {
+  it("requires unambiguous identity (full or first-only, not conflicting surname)", () => {
+    expect(namesReferToSameGuest("Jane McDaniel", "Jane McDaniel")).toBe(true);
+    expect(namesReferToSameGuest("Jane", "Jane McDaniel")).toBe(true);
+    expect(namesReferToSameGuest("jane mcdaniel", "Jane McDaniel")).toBe(true);
+    expect(namesReferToSameGuest("Jane Smith", "Jane McDaniel")).toBe(false);
+    expect(namesReferToSameGuest("Sarah Connor", "Jane McDaniel")).toBe(false);
+  });
+});
 
 describe("classifyDeskSubject", () => {
   it("same guest: she/her and named active guest", () => {
@@ -38,10 +49,21 @@ describe("classifyDeskSubject", () => {
     ).toBe("same_guest");
   });
 
+  it("same guest: deictic the/our guest + she/her continuity", () => {
+    expect(
+      classifyDeskSubject("I have the guest here, can she come up?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Our guest is in the lobby, can she park?", jane)
+        .kind
+    ).toBe("same_guest");
+  });
+
   it("new arrival: someone else, person nouns, indefinite someone", () => {
     for (const u of [
       "I also have someone else here, can he come up?",
       "Someone is downstairs, can they come up?",
+      "Can someone park in the garage?",
       "Got a visitor, can he come up?",
       "There's a man at the door, can he come up?",
       "I have a delivery person here, can they come up?",
@@ -50,12 +72,26 @@ describe("classifyDeskSubject", () => {
       "I have a delivery here, can they come up?",
       "Guest in the lobby wants to come up",
       "Visitor downstairs asking for access",
+      "There is a housekeeper at the door, can she come up?",
     ]) {
       expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
     }
   });
 
-  it("clarify: he/they location after a known she/her guest", () => {
+  it("new arrival: different full name / conflicting surname", () => {
+    expect(
+      classifyDeskSubject("Sarah Connor is at the door, can she come up?", jane, {
+        spokenName: "Sarah Connor",
+      }).kind
+    ).toBe("new_arrival");
+    expect(
+      classifyDeskSubject("Jane Smith is here, can she come up?", jane, {
+        spokenName: "Jane Smith",
+      }).kind
+    ).toBe("new_arrival");
+  });
+
+  it("clarify: he/they location and mixed pronouns after a known guest", () => {
     expect(
       classifyDeskSubject("He's downstairs, can he come up?", jane).kind
     ).toBe("clarify");
@@ -63,7 +99,9 @@ describe("classifyDeskSubject", () => {
       classifyDeskSubject("They're waiting outside, can they park?", jane)
         .kind
     ).toBe("clarify");
-    // the/this + location is ambiguous after a known guest — clarify, not notes
+    expect(
+      classifyDeskSubject("He is with her, can he come up?", jane).kind
+    ).toBe("clarify");
     expect(
       classifyDeskSubject(
         "The visitor is downstairs, can they come up?",
@@ -87,9 +125,18 @@ describe("classifyDeskSubject", () => {
     expect(looksLikePersonIntro("Guest in the lobby wants to come up")).toBe(
       true
     );
+    expect(
+      looksLikePersonIntro("There is a housekeeper at the door")
+    ).toBe(true);
     expect(looksLikePersonIntro("Does she have visitor parking?")).toBe(false);
     expect(
       looksLikePersonIntro("I also have a question about the guest")
+    ).toBe(false);
+    expect(
+      looksLikePersonIntro("I have the guest here, can she come up?")
+    ).toBe(false);
+    expect(
+      looksLikePersonIntro("Our guest is in the lobby, can she park?")
     ).toBe(false);
   });
 });

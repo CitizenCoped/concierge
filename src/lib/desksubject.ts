@@ -10,6 +10,8 @@
  *
  * Prefer ask-over-guess. Avoid stacking unrelated phrase lists: use structural
  * cues (person intro, location arrival, deixis, pronouns) with fail-closed ties.
+ * Reuse of activeGuest requires an unambiguous name match (full name, or a
+ * single-token first name with no conflicting surname).
  */
 
 export type DeskSubjectKind =
@@ -34,12 +36,16 @@ const EXPLICIT_OTHER_RE =
 const VISITOR_NONPERSON_TAIL =
   "(?:parking|pass|spot|space|permit|sticker|badge)";
 
+/** Determiners that refer back to the known guest — not a new person intro. */
+const DEICTIC_DET = "the|this|that|my|our|his|her|their";
+
 /**
  * Structural person introduction — not an open-ended phrase list.
  * - Role nouns (man/woman/delivery person/…)
  * - Optional short adjective before guest/visitor (female guest, new visitor)
- * - have/got/there's + (adj?) guest/visitor (excluding visitor parking)
- * - Bare guest/visitor + location (excluding "the/this guest" deixis)
+ * - have/got/there's + optional a/an + optional non-deictic adj + guest/visitor
+ * - Bare guest/visitor + location (excluding deictic the/our/my guest)
+ * - there is / I have + entity at a desk location (housekeeper at the door)
  */
 const ROLE_PERSON_RE =
   /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person)\b/i;
@@ -50,7 +56,7 @@ const ADJ_GUEST_RE = new RegExp(
 );
 
 const HAVE_GUEST_RE = new RegExp(
-  `\\b(?:got|have|there's|there is|i have|i'?ve got|we have)\\s+(?:an?\\s+)?(?:(?!question|package|delivery|update|message|note)\\w+\\s+){0,2}(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
+  `\\b(?:got|have|there's|there is|i have|i'?ve got|we have)\\s+(?:an?\\s+)?(?:(?!${DEICTIC_DET}|question|package|delivery|update|message|note)\\w+\\s+){0,2}(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b`,
   "i"
 );
 
@@ -59,38 +65,61 @@ const ARTICLE_GUEST_RE = new RegExp(
   "i"
 );
 
-/** "Guest in the lobby…" / "Visitor downstairs…" — not "the/this guest". */
+/** "Guest in the lobby…" — not deictic "the/our/my guest". */
 const BARE_GUEST_LOCATION_RE = new RegExp(
-  `(?<!\\b(?:the|this)\\s)\\b(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b(?:\\s+\\w+){0,4}\\s+(?:in\\s+the\\s+(?:lobby|building)|at\\s+the\\s+(?:door|front\\s+desk)|downstairs|lobby|outside|waiting|here|asking)\\b`,
+  `(?<!\\b(?:${DEICTIC_DET})\\s)\\b(?:visitor|guest)\\b(?!\\s+${VISITOR_NONPERSON_TAIL})\\b(?:\\s+\\w+){0,4}\\s+(?:in\\s+the\\s+(?:lobby|building)|at\\s+the\\s+(?:door|front\\s+desk)|downstairs|lobby|outside|waiting|here|asking)\\b`,
+  "i"
+);
+
+/**
+ * "There is a housekeeper at the door" / "I have a cleaner downstairs" —
+ * structural entity+location intro (excludes deictic the/our guest and packages).
+ */
+const ENTITY_AT_LOCATION_RE = new RegExp(
+  `\\b(?:there(?:'s| is)|i have|i'?ve got|we have|got)\\s+(?:an?\\s+)?(?!${DEICTIC_DET}|question|package|parcel|delivery\\b)[\\w'-]+(?:\\s+[\\w'-]+){0,3}\\s+(?:at the door|downstairs|in the lobby|outside|waiting)\\b`,
   "i"
 );
 
 const INDEFINITE_SOMEONE_RE = /\b(?:someone|somebody)\b/i;
-
-/**
- * Location / presence / access-request cues for indefinite "someone".
- * Deliberately narrower than general info keywords (instructions, parking Qs).
- */
-const SOMEONE_ARRIVAL_RE =
-  /\b(?:downstairs|lobby|front desk|(?:at the )?door|outside|waiting|here|arrived|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|access|enter|entry)\b/i;
 
 const ACCESS_OR_INFO_RE =
   /\?|\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|downstairs|lobby|front desk|door|outside|waiting)\b/i;
 
 const SAME_PRONOUN_RE = /\b(?:she|her)\b/i;
 const OTHER_PRONOUN_RE = /\b(?:he|him|they|them)\b/i;
-const THE_GUEST_RE = /\b(?:the|this)\s+(?:guest|visitor)\b/i;
+/** Known-guest deixis: the/this/our/my guest (not a fresh arrival label). */
+const DEICTIC_GUEST_RE = new RegExp(
+  `\\b(?:${DEICTIC_DET})\\s+(?:guest|visitor)\\b`,
+  "i"
+);
 const LOCATION_RE =
   /\b(?:downstairs|lobby|front desk|at the door|outside|waiting|arrived|here)\b/i;
 
-function namesMatch(spoken: string, guestName: string): boolean {
-  const g = guestName.trim().toLowerCase();
-  const s = spoken.trim().toLowerCase();
-  if (!g || !s) return false;
-  if (g === s) return true;
-  const gFirst = g.split(/\s+/)[0] ?? "";
-  const sFirst = s.split(/\s+/)[0] ?? "";
-  return Boolean(gFirst && sFirst && gFirst === sFirst);
+/**
+ * Unambiguous identity match for reusing activeGuest.
+ * - Full normalized equality → match
+ * - Single-token spoken first name matching guest first name → match (partial ref)
+ * - Multi-token spoken with a different surname → NOT a match (Jane Smith ≠ Jane McDaniel)
+ */
+export function namesReferToSameGuest(
+  spoken: string,
+  guestName: string
+): boolean {
+  const gParts = guestName.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const sParts = spoken.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!gParts.length || !sParts.length) return false;
+  if (gParts.join(" ") === sParts.join(" ")) return true;
+  // Partial first-name-only reference to the known guest.
+  if (sParts.length === 1 && gParts[0] === sParts[0]) return true;
+  // Explicit full-ish name with a conflicting last token → different person.
+  if (sParts.length >= 2 && gParts.length >= 2) {
+    const gLast = gParts[gParts.length - 1]!;
+    const sLast = sParts[sParts.length - 1]!;
+    if (sParts[0] === gParts[0] && sLast !== gLast) return false;
+    // Spoken tokens are a prefix of the guest's full name.
+    if (sParts.every((p, i) => p === gParts[i])) return true;
+  }
+  return false;
 }
 
 function isInfoSeeking(utterance: string): boolean {
@@ -105,7 +134,8 @@ export function looksLikePersonIntro(utterance: string): boolean {
     ADJ_GUEST_RE.test(u) ||
     HAVE_GUEST_RE.test(u) ||
     ARTICLE_GUEST_RE.test(u) ||
-    BARE_GUEST_LOCATION_RE.test(u)
+    BARE_GUEST_LOCATION_RE.test(u) ||
+    ENTITY_AT_LOCATION_RE.test(u)
   );
 }
 
@@ -135,14 +165,13 @@ export function classifyDeskSubject(
     return { kind: "new_arrival", named };
   }
 
-  // Indefinite someone: only when paired with arrival/presence/access-request.
+  // Indefinite someone + info/access → ask for a name (never reuse notes).
   // "Did someone leave instructions for her?" stays same-guest via she/her.
-  if (INDEFINITE_SOMEONE_RE.test(u) && SOMEONE_ARRIVAL_RE.test(u)) {
-    // If the turn also clearly continues the known guest (she/her) without a
-    // competing person intro, prefer same_guest over clearing.
+  if (INDEFINITE_SOMEONE_RE.test(u) && isInfoSeeking(u)) {
     if (
       guest &&
       SAME_PRONOUN_RE.test(u) &&
+      !OTHER_PRONOUN_RE.test(u) &&
       !personIntro &&
       !EXPLICIT_OTHER_RE.test(u)
     ) {
@@ -163,7 +192,10 @@ export function classifyDeskSubject(
     return { kind: "new_arrival", named };
   }
 
-  if (personIntro && !(guest && named && namesMatch(named, guest.name))) {
+  if (
+    personIntro &&
+    !(guest && named && namesReferToSameGuest(named, guest.name))
+  ) {
     return { kind: "new_arrival", named };
   }
 
@@ -175,7 +207,12 @@ export function classifyDeskSubject(
     /\b(?:i have|i'?ve got|we have|there is|there'?s|got)\b/i.test(u) ||
     LOCATION_RE.test(u);
 
-  if (named && guest && !namesMatch(named, guest.name) && arrivalContext) {
+  if (
+    named &&
+    guest &&
+    !namesReferToSameGuest(named, guest.name) &&
+    arrivalContext
+  ) {
     return { kind: "new_arrival", named };
   }
   if (named && !guest && arrivalContext) {
@@ -184,26 +221,32 @@ export function classifyDeskSubject(
 
   // --- High-confidence SAME GUEST ---
   if (guest) {
-    if (named && namesMatch(named, guest.name)) {
+    if (named && namesReferToSameGuest(named, guest.name)) {
       return { kind: "same_guest" };
     }
-    // she/her continuity without a competing person intro
+    // she/her continuity — only when no competing person / other-pronoun subject.
+    // "He is with her, can he come up?" and noun-led arrivals fall through.
     if (
       SAME_PRONOUN_RE.test(u) &&
+      !OTHER_PRONOUN_RE.test(u) &&
       !personIntro &&
-      !EXPLICIT_OTHER_RE.test(u)
+      !EXPLICIT_OTHER_RE.test(u) &&
+      !(named && !namesReferToSameGuest(named, guest.name))
     ) {
       return { kind: "same_guest" };
     }
-    // "the/this guest" deixis — same guest ONLY when not arrival-framed.
-    // "The visitor is downstairs, can they come up?" is ambiguous → clarify.
+    // Deictic the/our/my guest — same guest ONLY when not arrival-framed with
+    // a competing they/he. "The visitor is downstairs, can they…?" → clarify.
     if (
-      THE_GUEST_RE.test(u) &&
+      DEICTIC_GUEST_RE.test(u) &&
       !EXPLICIT_OTHER_RE.test(u) &&
       !personIntro &&
-      !(LOCATION_RE.test(u) && isInfoSeeking(u))
+      !(LOCATION_RE.test(u) && OTHER_PRONOUN_RE.test(u) && isInfoSeeking(u))
     ) {
-      return { kind: "same_guest" };
+      // Deictic + she/her / bare deictic question → same guest.
+      if (SAME_PRONOUN_RE.test(u) || !LOCATION_RE.test(u)) {
+        return { kind: "same_guest" };
+      }
     }
   }
 
@@ -212,14 +255,17 @@ export function classifyDeskSubject(
     if (OTHER_PRONOUN_RE.test(u) && !SAME_PRONOUN_RE.test(u)) {
       return { kind: "clarify" };
     }
-    // the/this guest + location/access after a known guest → clarify
-    if (THE_GUEST_RE.test(u) && LOCATION_RE.test(u)) {
+    // Mixed pronouns or deictic + location → clarify (never guess).
+    if (OTHER_PRONOUN_RE.test(u) && SAME_PRONOUN_RE.test(u)) {
+      return { kind: "clarify" };
+    }
+    if (DEICTIC_GUEST_RE.test(u) && LOCATION_RE.test(u)) {
       return { kind: "clarify" };
     }
     if (
       OTHER_PRONOUN_RE.test(u) ||
       SAME_PRONOUN_RE.test(u) ||
-      THE_GUEST_RE.test(u) ||
+      DEICTIC_GUEST_RE.test(u) ||
       /\b(?:visitor|guest|downstairs|lobby|door|outside)\b/i.test(u)
     ) {
       return { kind: "clarify" };

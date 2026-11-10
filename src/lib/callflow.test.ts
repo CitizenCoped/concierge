@@ -1594,4 +1594,89 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     expect(r.nextState.phase).toBe("ASK_NAME");
     expect(r.nextState.activeGuest).toBeNull();
   });
+
+  it("someone + parking question does not reuse Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
+    const r = await step(
+      admitted.nextState,
+      "Can someone park in the garage?",
+      guarded
+    );
+    expect(answeredFromNotes).toBe(false);
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeNull();
+  });
+
+  it("deictic the/our guest + she/her keeps Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "I have the guest here, can she come up?",
+      "Our guest is in the lobby, can she park?",
+    ]) {
+      const r = await step(admitted.nextState, u, deps);
+      expect(r.nextState.phase, u).not.toBe("ASK_NAME");
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+      expect(notifyEvents(r.effects), u).toContain("guest.info_answered");
+    }
+  });
+
+  it("she/her with a new person intro does not bind to Jane", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "Sarah Connor is at the door, can she come up?",
+      "There is a housekeeper at the door, can she come up?",
+      "He is with her, can he come up?",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        matchGuest: async () => ({ match: null, candidates: [] }),
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      // New arrival asks name; mixed-pronoun clarify asks which person.
+      expect(
+        ["ASK_NAME", "CLARIFY_SUBJECT"].includes(r.nextState.phase),
+        `${u} → ${r.nextState.phase}`
+      ).toBe(true);
+      if (r.nextState.phase === "ASK_NAME") {
+        expect(r.nextState.activeGuest, u).toBeNull();
+      }
+    }
+  });
+
+  it("same first name different surname does not reuse Jane", async () => {
+    const { admitted, deps } = await admitJane();
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      matchGuest: async () => ({ match: null, candidates: [] }),
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
+    const r = await step(
+      admitted.nextState,
+      "Jane Smith is here, can she come up?",
+      guarded
+    );
+    expect(answeredFromNotes).toBe(false);
+    expect(r.nextState.phase).toBe("ASK_NAME");
+    expect(r.nextState.activeGuest).toBeNull();
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+  });
 });
