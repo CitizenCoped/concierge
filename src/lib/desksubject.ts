@@ -423,7 +423,9 @@ export function classifyDeskSubject(
     guest &&
     /\b(?:visitor|guest)\b/i.test(u) &&
     !DEICTIC_GUEST_RE.test(u) &&
-    !/\bvisitor\s+(?:parking|pass|spot|space|permit|sticker|badge)\b/i.test(u) &&
+    !/\b(?:visitor|guest)\s+(?:parking|pass|spot|space|permit|sticker|badge)\b/i.test(
+      u
+    ) &&
     isInfoSeeking(u)
   ) {
     return { kind: "new_arrival", named };

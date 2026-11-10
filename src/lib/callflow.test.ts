@@ -1675,6 +1675,21 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
+  it("guest/visitor parking amenity with she/her keeps Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "Does she have guest parking?",
+      "Does she have a guest pass?",
+      "Does she have visitor parking?",
+      "Can she use the visitor pass?",
+    ]) {
+      const r = await step(admitted.nextState, u, deps);
+      expect(r.nextState.phase, u).not.toBe("ASK_NAME");
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+      expect(notifyEvents(r.effects), u).toContain("guest.info_answered");
+    }
+  });
+
   it("deictic the/our guest + she/her keeps Jane notes", async () => {
     const { admitted, deps } = await admitJane();
     for (const u of [

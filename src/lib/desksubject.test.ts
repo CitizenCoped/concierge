@@ -263,13 +263,19 @@ describe("classifyDeskSubject", () => {
     ).toBe("clarify");
   });
 
-  it("visitor parking compound is not a new person", () => {
+  it("visitor/guest parking compound is not a new person", () => {
     expect(
       classifyDeskSubject("Does she have visitor parking available?", jane)
         .kind
     ).toBe("same_guest");
     expect(
       classifyDeskSubject("Can she use the visitor pass?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Does she have guest parking?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Does she have a guest pass?", jane).kind
     ).toBe("same_guest");
   });
 
