@@ -109,10 +109,8 @@ describe("classifyDeskSubject", () => {
       "I have someone here, can she come up?",
       "Got a visitor, can he come up?",
       "There's a man at the door, can he come up?",
-      "I have a delivery person here, can they come up?",
       "There's a female visitor downstairs",
       "I have a female guest here, can she come up?",
-      "I have a delivery here, can they come up?",
       "Guest in the lobby wants to come up",
       "Visitor downstairs asking for access",
       "There is a housekeeper at the door, can she come up?",
@@ -120,6 +118,43 @@ describe("classifyDeskSubject", () => {
     ]) {
       expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
     }
+  });
+
+  it("delivery arrival: food/courier cues are a separate subject", () => {
+    for (const u of [
+      "I have a delivery here, can they come up?",
+      "I have a delivery person here, can they come up?",
+      "There's a DoorDash delivery downstairs",
+      "Uber Eats is here with food",
+      "Instacart groceries are at the door",
+      "Food delivery for the unit, can they come up?",
+      "We have a takeout delivery here",
+    ]) {
+      expect(classifyDeskSubject(u, jane).kind, u).toBe("delivery_arrival");
+      expect(classifyDeskSubject(u, null).kind, u).toBe("delivery_arrival");
+    }
+  });
+
+  it("bare food/brand chatter is not a delivery arrival", () => {
+    for (const u of ["DoorDash", "take out", "Notes mention food delivery"]) {
+      expect(classifyDeskSubject(u, jane).kind, u).not.toBe("delivery_arrival");
+      expect(classifyDeskSubject(u, null).kind, u).not.toBe("delivery_arrival");
+    }
+  });
+
+  it("clarify_delivery: visitor framing + delivery without food-service cue", () => {
+    expect(
+      classifyDeskSubject(
+        "I have a visitor with a delivery, can they come up?",
+        jane
+      ).kind
+    ).toBe("clarify_delivery");
+    expect(
+      classifyDeskSubject(
+        "Someone is here with a delivery for you",
+        null
+      ).kind
+    ).toBe("clarify_delivery");
   });
 
   it("new arrival: different full name / conflicting surname", () => {
