@@ -20,7 +20,7 @@ describe("namesReferToSameGuest", () => {
 });
 
 describe("classifyDeskSubject", () => {
-  it("same guest: she/her and named active guest", () => {
+  it("same guest: she/her and named active guest with no competing signal", () => {
     expect(
       classifyDeskSubject("Can she still use the garage?", jane).kind
     ).toBe("same_guest");
@@ -42,11 +42,11 @@ describe("classifyDeskSubject", () => {
     ).toBe("same_guest");
   });
 
-  it("same guest: someone + instructions for her (not an arrival)", () => {
+  it("fail-closed: someone + instructions for her clarifies (no note reuse)", () => {
     expect(
       classifyDeskSubject("Did someone leave instructions for her?", jane)
         .kind
-    ).toBe("same_guest");
+    ).toBe("clarify");
   });
 
   it("same guest: deictic the/our guest + she/her continuity", () => {
@@ -59,11 +59,13 @@ describe("classifyDeskSubject", () => {
     ).toBe("same_guest");
   });
 
-  it("new arrival: someone else, person nouns, indefinite someone", () => {
+  it("new arrival: someone else, person nouns, indefinite someone arrivals", () => {
     for (const u of [
       "I also have someone else here, can he come up?",
       "Someone is downstairs, can they come up?",
       "Can someone park in the garage?",
+      "Someone new is here, can she come up?",
+      "I have someone here, can she come up?",
       "Got a visitor, can he come up?",
       "There's a man at the door, can he come up?",
       "I have a delivery person here, can they come up?",
@@ -73,6 +75,7 @@ describe("classifyDeskSubject", () => {
       "Guest in the lobby wants to come up",
       "Visitor downstairs asking for access",
       "There is a housekeeper at the door, can she come up?",
+      "There is a housekeeper here, can she come up?",
     ]) {
       expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
     }
@@ -128,6 +131,8 @@ describe("classifyDeskSubject", () => {
     expect(
       looksLikePersonIntro("There is a housekeeper at the door")
     ).toBe(true);
+    expect(looksLikePersonIntro("There is a housekeeper here")).toBe(true);
+    expect(looksLikePersonIntro("I have someone here")).toBe(true);
     expect(looksLikePersonIntro("Does she have visitor parking?")).toBe(false);
     expect(
       looksLikePersonIntro("I also have a question about the guest")

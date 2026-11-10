@@ -10,8 +10,11 @@
  *
  * Prefer ask-over-guess. Avoid stacking unrelated phrase lists: use structural
  * cues (person intro, location arrival, deixis, pronouns) with fail-closed ties.
- * Reuse of activeGuest requires an unambiguous name match (full name, or a
- * single-token first name with no conflicting surname).
+ *
+ * Note reuse is fail-closed: answer from activeGuest notes ONLY when the turn
+ * clearly refers to that guest — unambiguous name match, or she/her / the-guest
+ * deixis with NO competing new-person / new-arrival signal at all. Otherwise
+ * clarify (or new_arrival when the arrival cue is high-confidence).
  */
 
 export type DeskSubjectKind =
@@ -45,7 +48,7 @@ const DEICTIC_DET = "the|this|that|my|our|his|her|their";
  * - Optional short adjective before guest/visitor (female guest, new visitor)
  * - have/got/there's + optional a/an + optional non-deictic adj + guest/visitor
  * - Bare guest/visitor + location (excluding deictic the/our/my guest)
- * - there is / I have + entity at a desk location (housekeeper at the door)
+ * - there is / I have + entity at a desk location (incl. "here")
  */
 const ROLE_PERSON_RE =
   /\b(?:(?:a|an|the|another|new|some)\s+)?(?:man|woman|guy|lady|gentleman|person|courier|driver|delivery\s+person)\b/i;
@@ -72,11 +75,12 @@ const BARE_GUEST_LOCATION_RE = new RegExp(
 );
 
 /**
- * "There is a housekeeper at the door" / "I have a cleaner downstairs" —
- * structural entity+location intro (excludes deictic the/our guest and packages).
+ * "There is a housekeeper at the door/here" / "I have a cleaner downstairs" /
+ * "I have someone here" — structural entity+location intro (excludes deictic
+ * the/our guest and packages). Location set includes bare "here".
  */
 const ENTITY_AT_LOCATION_RE = new RegExp(
-  `\\b(?:there(?:'s| is)|i have|i'?ve got|we have|got)\\s+(?:an?\\s+)?(?!${DEICTIC_DET}|question|package|parcel|delivery\\b)[\\w'-]+(?:\\s+[\\w'-]+){0,3}\\s+(?:at the door|downstairs|in the lobby|outside|waiting)\\b`,
+  `\\b(?:there(?:'s| is)|i have|i'?ve got|we have|got)\\s+(?:an?\\s+)?(?!${DEICTIC_DET}|question|package|parcel|delivery\\b)[\\w'-]+(?:\\s+[\\w'-]+){0,3}\\s+(?:at the door|downstairs|in the lobby|outside|waiting|here|arrived)\\b`,
   "i"
 );
 
@@ -139,6 +143,50 @@ export function looksLikePersonIntro(utterance: string): boolean {
   );
 }
 
+/**
+ * Any cue that the turn may be about a person other than activeGuest.
+ * Used to fail-close note reuse — presence of any of these blocks same_guest
+ * unless there is an unambiguous name match to the known guest.
+ */
+function hasCompetingPersonSignal(
+  utterance: string,
+  named: string | null,
+  guest: DeskGuestRef | null,
+  personIntro: boolean
+): boolean {
+  if (EXPLICIT_OTHER_RE.test(utterance)) return true;
+  if (INDEFINITE_SOMEONE_RE.test(utterance)) return true;
+  if (personIntro) return true;
+  if (OTHER_PRONOUN_RE.test(utterance)) return true;
+  if (
+    named &&
+    guest &&
+    !namesReferToSameGuest(named, guest.name)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Presence / arrival framing around an indefinite someone. */
+function someoneArrivalFramed(utterance: string): boolean {
+  if (!INDEFINITE_SOMEONE_RE.test(utterance)) return false;
+  if (LOCATION_RE.test(utterance)) return true;
+  if (looksLikePersonIntro(utterance)) return true;
+  if (EXPLICIT_OTHER_RE.test(utterance)) return true;
+  // "someone new" / "somebody new" — structural adj after indefinite person.
+  if (/\b(?:someone|somebody)\s+new\b/i.test(utterance)) return true;
+  // Access-request verbs aimed at sending a person up / letting them in.
+  if (
+    /\b(?:come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|park|parking|garage|access|enter|entry)\b/i.test(
+      utterance
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export interface ClassifyDeskSubjectOpts {
   /** Pre-extracted person name from callflow (preferred over local heuristics). */
   spokenName?: string | null;
@@ -159,25 +207,21 @@ export function classifyDeskSubject(
   const guest = activeGuest ?? null;
   const named = opts.spokenName?.trim() || null;
   const personIntro = looksLikePersonIntro(u);
+  const competing = hasCompetingPersonSignal(u, named, guest, personIntro);
 
   // --- High-confidence NEW ARRIVAL ---
   if (EXPLICIT_OTHER_RE.test(u)) {
     return { kind: "new_arrival", named };
   }
 
-  // Indefinite someone + info/access → ask for a name (never reuse notes).
-  // "Did someone leave instructions for her?" stays same-guest via she/her.
+  // Indefinite someone + info/access: never reuse notes.
+  // Arrival-framed → ask for a name; otherwise clarify when a guest is active
+  // (e.g. "Did someone leave instructions for her?").
   if (INDEFINITE_SOMEONE_RE.test(u) && isInfoSeeking(u)) {
-    if (
-      guest &&
-      SAME_PRONOUN_RE.test(u) &&
-      !OTHER_PRONOUN_RE.test(u) &&
-      !personIntro &&
-      !EXPLICIT_OTHER_RE.test(u)
-    ) {
-      return { kind: "same_guest" };
+    if (!guest || someoneArrivalFramed(u) || personIntro) {
+      return { kind: "new_arrival", named };
     }
-    return { kind: "new_arrival", named };
+    return { kind: "clarify" };
   }
 
   // Delivery/package at the door asking to come up — person, not leave-a-package.
@@ -219,54 +263,28 @@ export function classifyDeskSubject(
     return { kind: "new_arrival", named };
   }
 
-  // --- High-confidence SAME GUEST ---
+  // --- High-confidence SAME GUEST (fail-closed note reuse) ---
+  // Unambiguous name match → same guest. Pronoun / the-guest deixis only
+  // when there is no competing new-person / new-arrival signal at all.
   if (guest) {
     if (named && namesReferToSameGuest(named, guest.name)) {
       return { kind: "same_guest" };
     }
-    // she/her continuity — only when no competing person / other-pronoun subject.
-    // "He is with her, can he come up?" and noun-led arrivals fall through.
     if (
-      SAME_PRONOUN_RE.test(u) &&
-      !OTHER_PRONOUN_RE.test(u) &&
-      !personIntro &&
-      !EXPLICIT_OTHER_RE.test(u) &&
-      !(named && !namesReferToSameGuest(named, guest.name))
+      !competing &&
+      (SAME_PRONOUN_RE.test(u) || DEICTIC_GUEST_RE.test(u))
     ) {
       return { kind: "same_guest" };
-    }
-    // Deictic the/our/my guest — same guest ONLY when not arrival-framed with
-    // a competing they/he. "The visitor is downstairs, can they…?" → clarify.
-    if (
-      DEICTIC_GUEST_RE.test(u) &&
-      !EXPLICIT_OTHER_RE.test(u) &&
-      !personIntro &&
-      !(LOCATION_RE.test(u) && OTHER_PRONOUN_RE.test(u) && isInfoSeeking(u))
-    ) {
-      // Deictic + she/her / bare deictic question → same guest.
-      if (SAME_PRONOUN_RE.test(u) || !LOCATION_RE.test(u)) {
-        return { kind: "same_guest" };
-      }
     }
   }
 
   // --- AMBIGUOUS with a known guest in play ---
   if (guest && isInfoSeeking(u)) {
-    if (OTHER_PRONOUN_RE.test(u) && !SAME_PRONOUN_RE.test(u)) {
-      return { kind: "clarify" };
-    }
-    // Mixed pronouns or deictic + location → clarify (never guess).
-    if (OTHER_PRONOUN_RE.test(u) && SAME_PRONOUN_RE.test(u)) {
-      return { kind: "clarify" };
-    }
-    if (DEICTIC_GUEST_RE.test(u) && LOCATION_RE.test(u)) {
-      return { kind: "clarify" };
-    }
     if (
-      OTHER_PRONOUN_RE.test(u) ||
+      competing ||
       SAME_PRONOUN_RE.test(u) ||
       DEICTIC_GUEST_RE.test(u) ||
-      /\b(?:visitor|guest|downstairs|lobby|door|outside)\b/i.test(u)
+      /\b(?:visitor|guest|downstairs|lobby|door|outside|here)\b/i.test(u)
     ) {
       return { kind: "clarify" };
     }

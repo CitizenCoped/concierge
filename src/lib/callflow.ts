@@ -156,8 +156,10 @@ const TRANSFER_NEGATION_RE =
 // Stop words prevent "guest is in the lobby" from capturing "in the" as a name.
 // guest/visitor stay allowed as later name tokens ("Test Visitor") but
 // plausibleName rejects names that *start* with those words.
+// Trailing \b is required: case-insensitive patterns otherwise treat short
+// stop words as prefixes and reject real names (Ann, Helen, Theodore).
 const NAME_PART =
-  "(?!here|there|waiting|downstairs|lobby|named|called|in|the|a|an|to|for|at|of|with|and|or|from|on|by|my|our|your|this|that|they|them|she|he|her|his|him|their)[A-Za-z][A-Za-z'’-]*";
+  "(?!(?:here|there|waiting|downstairs|lobby|named|called|in|the|a|an|to|for|at|of|with|and|or|from|on|by|my|our|your|this|that|they|them|she|he|her|his|him|their)\\b)[A-Za-z][A-Za-z'’-]*";
 const NAME = `${NAME_PART}(?:\\s+${NAME_PART}){0,3}`;
 const NAME_PATTERNS: RegExp[] = [
   new RegExp(

@@ -1542,16 +1542,25 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
-  it("someone + instructions for her keeps Jane notes", async () => {
+  it("someone + instructions for her clarifies instead of reusing Jane notes", async () => {
     const { admitted, deps } = await admitJane();
+    let answeredFromNotes = false;
+    const guarded = {
+      ...deps,
+      answerGuestInfo: async () => {
+        answeredFromNotes = true;
+        return { answer: "yes" as const, reply: "should not run" };
+      },
+    };
     const r = await step(
       admitted.nextState,
       "Did someone leave instructions for her?",
-      deps
+      guarded
     );
-    expect(r.nextState.phase).not.toBe("ASK_NAME");
+    expect(answeredFromNotes).toBe(false);
+    expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+    expect(r.nextState.phase).toBe("CLARIFY_SUBJECT");
     expect(r.nextState.activeGuest?.name).toBe("Jane McDaniel");
-    expect(notifyEvents(r.effects)).toContain("guest.info_answered");
   });
 
   it("CONFIRM_MESSAGE routes clarify subjects after finalize", async () => {
@@ -1633,6 +1642,10 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     for (const u of [
       "Sarah Connor is at the door, can she come up?",
       "There is a housekeeper at the door, can she come up?",
+      "There is a housekeeper here, can she come up?",
+      "Someone new is here, can she come up?",
+      "I have someone here, can she come up?",
+      "Somebody new downstairs, can she come up?",
       "He is with her, can he come up?",
     ]) {
       let answeredFromNotes = false;
@@ -1678,5 +1691,19 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     expect(r.nextState.phase).toBe("ASK_NAME");
     expect(r.nextState.activeGuest).toBeNull();
     expect(notifyEvents(r.effects)).not.toContain("guest.info_answered");
+  });
+});
+
+describe("name extraction stop-word boundaries", () => {
+  it("extracts Ann, Helen, and Theodore (stop words must not prefix-match)", () => {
+    expect(extractName("Ann Smith is here, can she come up?")).toBe(
+      "Ann Smith"
+    );
+    expect(extractName("Helen Park is at the door")).toBe("Helen Park");
+    expect(extractName("Theodore Roosevelt is downstairs")).toBe(
+      "Theodore Roosevelt"
+    );
+    expect(extractName("I have Ann here")).toBe("Ann");
+    expect(extractName("I have Helen waiting")).toBe("Helen");
   });
 });
