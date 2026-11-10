@@ -79,6 +79,10 @@ describe("name extraction", () => {
     expect(
       looksLikeGuestPermissionQuestion("Is Jane allowed to park in the garage?")
     ).toBe(true);
+    expect(extractQuestionGuestName("Can Bob still use the garage?")).toBe(
+      "Bob"
+    );
+    expect(extractQuestionGuestName("Can Bob also park?")).toBe("Bob");
   });
 });
 
@@ -1687,6 +1691,49 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       expect(r.nextState.phase, u).not.toBe("ASK_NAME");
       expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
       expect(notifyEvents(r.effects), u).toContain("guest.info_answered");
+    }
+  });
+
+  it("a guest parking / her boyfriend / Bob still use do not reuse Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "I have a guest parking in the garage, can she come up?",
+      "I have her boyfriend here, can she come up?",
+      "I have her nanny here",
+      "Can Bob still use the garage?",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        matchGuest: async () => ({ match: null, candidates: [] }),
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(
+        ["ASK_NAME", "CLARIFY_SUBJECT"].includes(r.nextState.phase),
+        `${u} → ${r.nextState.phase}`
+      ).toBe(true);
+    }
+  });
+
+  it("package/delivery/question for Jane does not admit a visitor", async () => {
+    const deps = depsWith(async () => ({ match: jane, candidates: [jane] }));
+    for (const u of [
+      "I have a package for Jane",
+      "We have a delivery for Jane",
+      "I have a question for Jane",
+    ]) {
+      const r = await step({ phase: "INTENT" }, u, deps);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.admitted");
+      expect(outcomeOf(r.effects), u).not.toBe("guest_admitted");
+      expect(r.reply.toLowerCase(), u).not.toMatch(
+        /send (?:them|her|him) up|come on up|you're all set|go ahead/
+      );
     }
   });
 

@@ -159,7 +159,7 @@ const TRANSFER_NEGATION_RE =
 // Trailing \b is required: case-insensitive patterns otherwise treat short
 // stop words as prefixes and reject real names (Ann, Helen, Theodore).
 const NAME_PART =
-  "(?!(?:here|there|waiting|downstairs|lobby|named|called|in|the|a|an|to|for|at|of|with|and|or|from|on|by|my|our|your|this|that|they|them|she|he|her|his|him|their)\\b)[A-Za-z][A-Za-z'’-]*";
+  "(?!(?:here|there|waiting|downstairs|lobby|named|called|in|the|a|an|to|for|at|of|with|and|or|from|on|by|my|our|your|this|that|they|them|she|he|her|his|him|their|still|please|also|just|now|again|yet)\\b)[A-Za-z][A-Za-z'’-]*";
 const NAME = `${NAME_PART}(?:\\s+${NAME_PART}){0,3}`;
 const NAME_PATTERNS: RegExp[] = [
   new RegExp(
@@ -273,13 +273,22 @@ export function isPartialName(name: string): boolean {
   return parts.length < 2;
 }
 
+/** Optional discourse fillers between a guest name and the access verb. */
+const QUESTION_NAME_FILLER = "(?:(?:still|please|also|just|now|again|yet)\\s+)?";
+
 const QUESTION_NAME_PATTERNS: RegExp[] = [
   new RegExp(
-    `\\b(?:is|are|was|were|can|could|may|does|do|did|has|have)\\s+(${NAME})\\s+(?:allowed|permitted|able|authorized|welcome|ok|okay|cleared|have|get|use|park|enter|access|any|special|expected)`,
+    `\\b(?:is|are|was|were|can|could|may|does|do|did|has|have)\\s+(${NAME})\\s+${QUESTION_NAME_FILLER}(?:allowed|permitted|able|authorized|welcome|ok|okay|cleared|have|get|use|park|enter|access|any|special|expected)`,
     "i"
   ),
-  new RegExp(`\\b(?:does|can)\\s+(${NAME})\\s+have\\b`, "i"),
-  new RegExp(`\\b(${NAME})\\s+(?:allowed|permitted|authorized|expected)\\b`, "i"),
+  new RegExp(
+    `\\b(?:does|can)\\s+(${NAME})\\s+${QUESTION_NAME_FILLER}have\\b`,
+    "i"
+  ),
+  new RegExp(
+    `\\b(${NAME})\\s+${QUESTION_NAME_FILLER}(?:allowed|permitted|authorized|expected)\\b`,
+    "i"
+  ),
   new RegExp(
     `\\b(?:for|about|regarding)\\s+(${NAME})(?:\\s|$|[.?!,])`,
     "i"
@@ -383,7 +392,7 @@ export function looksLikeGuestInfoFollowUp(
         !/\b(?:the|this|that|my|our|his|her|their)\s+(?:guest|visitor)\b/i.test(
           u
         ) &&
-        !/\bvisitor\s+(?:parking|pass|spot|space|permit|sticker|badge)\b/i.test(
+        !/\b(?:visitor|guest)\s+(?:parking|pass|spot|space|permit|sticker|badge)\b/i.test(
           u
         )))
   ) {

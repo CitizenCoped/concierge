@@ -155,13 +155,25 @@ export function looksLikePersonIntro(utterance: string): boolean {
   );
 }
 
+/** Shared companion nouns (of-X and possessive her/his/their X). */
+const COMPANION_NOUN =
+  "friend|colleague|coworker|guest|visitor|plus\\s*one|husband|wife|partner|boyfriend|girlfriend|fianc[eé]|fiancee|son|daughter|mother|father|mom|dad|brother|sister|driver|nanny|babysitter|date|kids?|children|family\\s+member";
+
 /** "a friend of Jane" / companion framing — never the known guest alone. */
-const COMPANION_OF_RE =
-  /\b(?:a\s+)?(?:friend|colleague|coworker|guest|visitor|plus\s*one|husband|wife|partner|son|daughter|mother|father|mom|dad|brother|sister|driver|family\s+member)\s+of\b/i;
+const COMPANION_OF_RE = new RegExp(
+  `\\b(?:a\\s+)?(?:${COMPANION_NOUN})\\s+of\\b`,
+  "i"
+);
 
 /** Possessive companion: "her husband", "his sister" — not she/her continuity. */
-const POSSESSIVE_COMPANION_RE =
-  /\b(?:her|his|their)\s+(?:husband|wife|partner|friend|colleague|coworker|sister|brother|son|daughter|mom|dad|mother|father|driver|guest|visitor|plus\s*one|family\s+member)\b/i;
+const POSSESSIVE_COMPANION_RE = new RegExp(
+  `\\b(?:her|his|their)\\s+(?:${COMPANION_NOUN})\\b`,
+  "i"
+);
+
+/** "I have a package/question for …" — not a visitor arrival. */
+const NON_PERSON_HAVE_OBJECT_RE =
+  /\b(?:i have|i'?ve got|we have|got|there is|there'?s)\s+(?:an?\s+)?(?:package|parcel|delivery|question|message|note|update)\b/i;
 
 /**
  * Arrival locations for indefinite someone — narrower than LOCATION_RE.
@@ -242,7 +254,7 @@ function accessPersonName(
   guest?: DeskGuestRef | null
 ): string | null {
   const patterns = [
-    /\b(?:can|could|may|should)\s+([A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+(?:come\s+up|go\s+up|come\s+in|enter)\b/i,
+    /\b(?:can|could|may|should)\s+([A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+(?:(?:still|please|also|just|now|again|yet)\s+)?(?:come\s+up|go\s+up|come\s+in|enter|use|park|access)\b/i,
     /\b(?:send|let)\s+([A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+up\b/i,
   ];
   for (const re of patterns) {
@@ -380,11 +392,15 @@ export function classifyDeskSubject(
   }
 
   // A spoken name alone is NOT enough for new_arrival — need arrival context.
+  // "I have a package/question for Jane" is not visitor arrival framing.
+  const haveFraming =
+    /\b(?:i have|i'?ve got|we have|there is|there'?s|got)\b/i.test(u) &&
+    !NON_PERSON_HAVE_OBJECT_RE.test(u);
   const arrivalContext =
     EXPLICIT_OTHER_RE.test(u) ||
     personIntro ||
     INDEFINITE_SOMEONE_RE.test(u) ||
-    /\b(?:i have|i'?ve got|we have|there is|there'?s|got)\b/i.test(u) ||
+    haveFraming ||
     LOCATION_RE.test(u);
 
   if (
@@ -419,13 +435,17 @@ export function classifyDeskSubject(
 
   // Non-deictic visitor/guest + access/permission after a known guest —
   // never reuse notes ("Visitor for the unit").
+  // Amenity compounds (guest/visitor pass/parking/…) are not arrivals, but
+  // "a guest parking…" is person+verb — keep the fail-closed backstop.
+  const amenityCompound =
+    /\b(?:visitor|guest)\s+(?:pass|spot|space|permit|sticker|badge)\b/i.test(
+      u
+    ) || /(?<!\b(?:an?)\s+)\b(?:visitor|guest)\s+parking\b/i.test(u);
   if (
     guest &&
     /\b(?:visitor|guest)\b/i.test(u) &&
     !DEICTIC_GUEST_RE.test(u) &&
-    !/\b(?:visitor|guest)\s+(?:parking|pass|spot|space|permit|sticker|badge)\b/i.test(
-      u
-    ) &&
+    !amenityCompound &&
     isInfoSeeking(u)
   ) {
     return { kind: "new_arrival", named };

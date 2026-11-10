@@ -79,6 +79,10 @@ describe("classifyDeskSubject", () => {
     expect(
       classifyDeskSubject("Her husband is at the elevator", jane).kind
     ).toBe("new_arrival");
+    expect(
+      classifyDeskSubject("I have her boyfriend here, can she come up?", jane)
+        .kind
+    ).toBe("new_arrival");
   });
 
   it("same guest: deictic the/our guest + she/her continuity", () => {
@@ -277,6 +281,61 @@ describe("classifyDeskSubject", () => {
     expect(
       classifyDeskSubject("Does she have a guest pass?", jane).kind
     ).toBe("same_guest");
+  });
+
+  it("a guest parking (person+verb) is new_arrival, not amenity note reuse", () => {
+    expect(
+      classifyDeskSubject(
+        "I have a guest parking in the garage, can she come up?",
+        jane
+      )
+    ).toEqual({ kind: "new_arrival", named: null });
+    expect(
+      classifyDeskSubject("I have a guest parking, can she come up?", jane)
+    ).toEqual({ kind: "new_arrival", named: null });
+    expect(
+      classifyDeskSubject(
+        "There is a visitor parking downstairs who wants to come up",
+        jane
+      ).kind
+    ).toBe("new_arrival");
+  });
+
+  it("possessive boyfriend/nanny/kids companions are new_arrival", () => {
+    for (const u of [
+      "I have her boyfriend here, can she come up?",
+      "I have her nanny here",
+      "Her girlfriend is downstairs",
+      "I have her kids here",
+    ]) {
+      expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
+    }
+  });
+
+  it("access name with still/also filler is a competing person", () => {
+    expect(
+      classifyDeskSubject("Can Bob still use the garage?", jane, {
+        spokenName: "Bob",
+      }).kind
+    ).toBe("new_arrival");
+    expect(
+      classifyDeskSubject("Can Bob also park?", jane, {
+        spokenName: "Bob",
+      }).kind
+    ).toBe("new_arrival");
+  });
+
+  it("package/delivery/question for a name is not a visitor arrival", () => {
+    for (const u of [
+      "I have a package for Jane",
+      "We have a delivery for Jane",
+      "I have a question for Jane",
+    ]) {
+      expect(
+        classifyDeskSubject(u, null, { spokenName: "Jane" }).kind,
+        u
+      ).toBe("unrelated");
+    }
   });
 
   it("looksLikePersonIntro covers descriptive and bare lobby arrivals", () => {
