@@ -150,8 +150,54 @@ export function looksLikePersonIntro(utterance: string): boolean {
 const COMPANION_OF_RE =
   /\b(?:a\s+)?(?:friend|colleague|coworker|guest|visitor|plus\s*one|husband|wife|partner|son|daughter|mother|father|mom|dad|brother|sister|driver|family\s+member)\s+of\b/i;
 
+/** Trailing fillers that are not surname tokens in "can Jane please come up?". */
+const ACCESS_NAME_TRAILING_FILLER_RE =
+  /^(please|still|just|now|also|again|yet|too|really|already)$/i;
+
+/**
+ * Normalize a captured access-name span: drop leading determiners and trailing
+ * adverbs/fillers; reject pronouns and deictic guest/visitor phrases.
+ */
+function cleanAccessPersonName(raw: string): string | null {
+  const parts = raw
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  while (
+    parts.length &&
+    /^(the|a|an|this|that|our|my|your)$/i.test(parts[0]!)
+  ) {
+    parts.shift();
+  }
+  while (
+    parts.length &&
+    ACCESS_NAME_TRAILING_FILLER_RE.test(parts[parts.length - 1]!)
+  ) {
+    parts.pop();
+  }
+  const cleaned = parts.join(" ").trim();
+  if (!cleaned) return null;
+  // Pronouns / indefinite — not a person name for access routing.
+  if (
+    /^(she|he|they|her|him|them|someone|somebody|guest|visitor)$/i.test(
+      cleaned
+    )
+  ) {
+    return null;
+  }
+  // Deictic "the/our guest" after partial cleanup, or multi-token deixis.
+  if (
+    /^(the|this|that|our|my|your)\s+(guest|visitor)\b/i.test(raw.trim()) ||
+    /^(guest|visitor)\b/i.test(cleaned)
+  ) {
+    return null;
+  }
+  return cleaned;
+}
+
 /**
  * Access request naming a person ("can Bob come up?", "send Sarah up").
+ * Does not treat deictic the/our guest or trailing "please/still" as a name.
  */
 function accessPersonName(utterance: string): string | null {
   const patterns = [
@@ -162,14 +208,8 @@ function accessPersonName(utterance: string): string | null {
     const m = utterance.match(re);
     const raw = m?.[1]?.trim();
     if (!raw) continue;
-    if (
-      /^(she|he|they|her|him|them|someone|somebody|the|a|an|this|that)$/i.test(
-        raw
-      )
-    ) {
-      continue;
-    }
-    return raw;
+    const cleaned = cleanAccessPersonName(raw);
+    if (cleaned) return cleaned;
   }
   return null;
 }

@@ -165,6 +165,36 @@ describe("classifyDeskSubject", () => {
     expect(
       classifyDeskSubject("Can Bob come up?", jane).kind
     ).toBe("new_arrival");
+    expect(
+      classifyDeskSubject("Can Bob please come up?", jane).kind
+    ).toBe("new_arrival");
+  });
+
+  it("same guest: access name with trailing filler, not a conflicting surname", () => {
+    expect(
+      classifyDeskSubject("Can Jane please come up?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Can Jane still come up?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Can Jane McDaniel please come up?", jane).kind
+    ).toBe("same_guest");
+  });
+
+  it("same guest: deictic can the/our guest come up (not a new arrival)", () => {
+    expect(
+      classifyDeskSubject("Can the guest come up?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Can our guest come up?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Can this guest come up?", jane).kind
+    ).toBe("same_guest");
+    expect(
+      classifyDeskSubject("Can my guest come up?", jane).kind
+    ).toBe("same_guest");
   });
 
   it("visitor parking compound is not a new person", () => {

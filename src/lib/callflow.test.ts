@@ -1670,6 +1670,7 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       "A friend of Jane is here, can they come up?",
       "Jane is here, can Bob come up?",
       "Can Bob come up?",
+      "Can Bob please come up?",
     ]) {
       let answeredFromNotes = false;
       const guarded = {
@@ -1690,6 +1691,21 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       if (r.nextState.phase === "ASK_NAME") {
         expect(r.nextState.activeGuest, u).toBeNull();
       }
+    }
+  });
+
+  it("can Jane please / can the guest come up keeps Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "Can Jane please come up?",
+      "Can Jane still come up?",
+      "Can the guest come up?",
+      "Can our guest come up?",
+    ]) {
+      const r = await step(admitted.nextState, u, deps);
+      expect(r.nextState.phase, u).not.toBe("ASK_NAME");
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+      expect(notifyEvents(r.effects), u).toContain("guest.info_answered");
     }
   });
 
