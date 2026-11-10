@@ -373,6 +373,23 @@ export function looksLikeGuestInfoFollowUp(
     return false;
   }
 
+  // Fail-closed: with an active guest, unrelated turns that still mention an
+  // indefinite/unnamed person must not fall through to Guest Info notes.
+  if (
+    state?.activeGuest &&
+    subject.kind === "unrelated" &&
+    (/\b(?:someone|somebody)\b/i.test(u) ||
+      (/\b(?:visitor|guest)\b/i.test(u) &&
+        !/\b(?:the|this|that|my|our|his|her|their)\s+(?:guest|visitor)\b/i.test(
+          u
+        ) &&
+        !/\bvisitor\s+(?:parking|pass|spot|space|permit|sticker|badge)\b/i.test(
+          u
+        )))
+  ) {
+    return false;
+  }
+
   const hasGuestContext =
     Boolean(state?.activeGuest) || Boolean(extractQuestionGuestName(u));
   const infoSeeking =

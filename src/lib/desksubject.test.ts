@@ -49,6 +49,38 @@ describe("classifyDeskSubject", () => {
     ).toBe("clarify");
   });
 
+  it("fail-closed: someone + deictic presence clarifies (keep activeGuest)", () => {
+    for (const u of [
+      "Is someone there?",
+      "Is someone inside?",
+      "Is someone upstairs?",
+    ]) {
+      expect(classifyDeskSubject(u, jane).kind, u).toBe("clarify");
+    }
+  });
+
+  it("new arrival: someone + elevator/fob/unit access (not notes)", () => {
+    for (const u of [
+      "Someone is at the elevator",
+      "Somebody needs the fob",
+      "Can someone get a key?",
+    ]) {
+      expect(classifyDeskSubject(u, jane).kind, u).toBe("new_arrival");
+    }
+  });
+
+  it("new arrival: visitor for the unit / her husband (not Jane notes)", () => {
+    expect(classifyDeskSubject("Visitor for the unit", jane).kind).toBe(
+      "new_arrival"
+    );
+    expect(
+      classifyDeskSubject("I have her husband here", jane).kind
+    ).toBe("new_arrival");
+    expect(
+      classifyDeskSubject("Her husband is at the elevator", jane).kind
+    ).toBe("new_arrival");
+  });
+
   it("same guest: deictic the/our guest + she/her continuity", () => {
     expect(
       classifyDeskSubject("I have the guest here, can she come up?", jane).kind

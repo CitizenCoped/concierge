@@ -98,7 +98,7 @@ const LOCATION_PHRASE_TOKENS = "front desk|at the door";
 const LOCATION_TOKENS = `${LOCATION_SINGLE_TOKENS}|${LOCATION_PHRASE_TOKENS}`;
 
 const ACCESS_OR_INFO_RE = new RegExp(
-  `\\?|\\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|${LOCATION_TOKENS})\\b`,
+  `\\?|\\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|unit|condo|key|fob|elevator|amenity|${LOCATION_TOKENS})\\b`,
   "i"
 );
 
@@ -158,6 +158,18 @@ export function looksLikePersonIntro(utterance: string): boolean {
 /** "a friend of Jane" / companion framing — never the known guest alone. */
 const COMPANION_OF_RE =
   /\b(?:a\s+)?(?:friend|colleague|coworker|guest|visitor|plus\s*one|husband|wife|partner|son|daughter|mother|father|mom|dad|brother|sister|driver|family\s+member)\s+of\b/i;
+
+/** Possessive companion: "her husband", "his sister" — not she/her continuity. */
+const POSSESSIVE_COMPANION_RE =
+  /\b(?:her|his|their)\s+(?:husband|wife|partner|friend|colleague|coworker|sister|brother|son|daughter|mom|dad|mother|father|driver|guest|visitor|plus\s*one|family\s+member)\b/i;
+
+/**
+ * Arrival locations for indefinite someone — narrower than LOCATION_RE.
+ * Deictic presence (there/inside/upstairs/door) often checks on the admitted
+ * guest and must clarify, not clear activeGuest via new_arrival.
+ */
+const SOMEONE_ARRIVAL_LOCATION_RE =
+  /\b(?:downstairs|lobby|front desk|at the door|outside|waiting|arrived|here)\b/i;
 
 /** Trailing fillers that are not surname tokens in "can Jane please come up?". */
 const ACCESS_NAME_TRAILING_FILLER_RE =
@@ -268,6 +280,7 @@ function hasCompetingPersonSignal(
   if (EXPLICIT_OTHER_RE.test(utterance)) return true;
   if (INDEFINITE_SOMEONE_RE.test(utterance)) return true;
   if (COMPANION_OF_RE.test(utterance)) return true;
+  if (POSSESSIVE_COMPANION_RE.test(utterance)) return true;
   if (personIntro) return true;
   if (OTHER_PRONOUN_RE.test(utterance)) return true;
   if (otherAccessPersonName(utterance, guest)) return true;
@@ -281,17 +294,27 @@ function hasCompetingPersonSignal(
   return false;
 }
 
+/** she/her continuity — not possessive "her husband/friend/…". */
+function hasSameGuestPronounContinuity(utterance: string): boolean {
+  if (POSSESSIVE_COMPANION_RE.test(utterance)) return false;
+  if (/\bshe\b/i.test(utterance)) return true;
+  // Bare objective/possessive her without a companion noun.
+  if (/\bher\b/i.test(utterance)) return true;
+  return false;
+}
+
 /** Presence / arrival framing around an indefinite someone. */
 function someoneArrivalFramed(utterance: string): boolean {
   if (!INDEFINITE_SOMEONE_RE.test(utterance)) return false;
-  if (LOCATION_RE.test(utterance)) return true;
+  // Narrower than LOCATION_RE — there/inside/upstairs alone → clarify.
+  if (SOMEONE_ARRIVAL_LOCATION_RE.test(utterance)) return true;
   if (looksLikePersonIntro(utterance)) return true;
   if (EXPLICIT_OTHER_RE.test(utterance)) return true;
   // "someone new" / "somebody new" — structural adj after indefinite person.
   if (/\b(?:someone|somebody)\s+new\b/i.test(utterance)) return true;
   // Access-request verbs aimed at sending a person up / letting them in.
   if (
-    /\b(?:come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|park|parking|garage|access|enter|entry)\b/i.test(
+    /\b(?:come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|park|parking|garage|access|enter|entry|elevator|fob|key|unit|condo|amenity)\b/i.test(
       utterance
     )
   ) {
@@ -382,12 +405,28 @@ export function classifyDeskSubject(
   if (guest && otherAccess) {
     return { kind: "new_arrival", named: otherAccess };
   }
-  if (guest && COMPANION_OF_RE.test(u) && (arrivalContext || isInfoSeeking(u))) {
+  if (
+    guest &&
+    (COMPANION_OF_RE.test(u) || POSSESSIVE_COMPANION_RE.test(u)) &&
+    (arrivalContext || isInfoSeeking(u))
+  ) {
     return {
       kind: "new_arrival",
       named:
         named && !namesReferToSameGuest(named, guest.name) ? named : null,
     };
+  }
+
+  // Non-deictic visitor/guest + access/permission after a known guest —
+  // never reuse notes ("Visitor for the unit").
+  if (
+    guest &&
+    /\b(?:visitor|guest)\b/i.test(u) &&
+    !DEICTIC_GUEST_RE.test(u) &&
+    !/\bvisitor\s+(?:parking|pass|spot|space|permit|sticker|badge)\b/i.test(u) &&
+    isInfoSeeking(u)
+  ) {
+    return { kind: "new_arrival", named };
   }
 
   // --- High-confidence SAME GUEST (fail-closed note reuse) ---
@@ -414,7 +453,7 @@ export function classifyDeskSubject(
     }
     if (
       !competing &&
-      (SAME_PRONOUN_RE.test(u) ||
+      (hasSameGuestPronounContinuity(u) ||
         (DEICTIC_GUEST_RE.test(u) && !LOCATION_RE.test(u)))
     ) {
       return { kind: "same_guest" };
@@ -426,9 +465,12 @@ export function classifyDeskSubject(
     if (
       competing ||
       otherAccess ||
+      hasSameGuestPronounContinuity(u) ||
       SAME_PRONOUN_RE.test(u) ||
       DEICTIC_GUEST_RE.test(u) ||
-      /\b(?:visitor|guest|downstairs|lobby|door|outside|here|arrived)\b/i.test(u)
+      /\b(?:visitor|guest|downstairs|lobby|door|outside|here|arrived|upstairs|inside|there|elevator|fob|unit)\b/i.test(
+        u
+      )
     ) {
       return { kind: "clarify" };
     }

@@ -1624,6 +1624,57 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     expect(r.nextState.activeGuest).toBeNull();
   });
 
+  it("someone + there/inside/upstairs clarifies without clearing Jane", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "Is someone there?",
+      "Is someone inside?",
+      "Is someone upstairs?",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(r.nextState.phase, u).toBe("CLARIFY_SUBJECT");
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+    }
+  });
+
+  it("visitor for unit / her husband / elevator someone do not reuse Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "Visitor for the unit",
+      "Someone is at the elevator",
+      "Somebody needs the fob",
+      "I have her husband here",
+      "Her husband is at the elevator",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        matchGuest: async () => ({ match: null, candidates: [] }),
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(
+        ["ASK_NAME", "CLARIFY_SUBJECT"].includes(r.nextState.phase),
+        `${u} → ${r.nextState.phase}`
+      ).toBe(true);
+    }
+  });
+
   it("deictic the/our guest + she/her keeps Jane notes", async () => {
     const { admitted, deps } = await admitJane();
     for (const u of [
