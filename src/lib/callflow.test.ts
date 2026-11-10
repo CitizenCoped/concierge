@@ -2297,6 +2297,7 @@ describe("delivery approval (reserved Delivery list entry)", () => {
   it("takeout/food at a location still matches the Delivery list", async () => {
     for (const u of [
       "Takeout is here",
+      "Takeout's here",
       "There's takeout downstairs",
       "There's food downstairs, can they come up?",
     ]) {
@@ -2304,6 +2305,23 @@ describe("delivery approval (reserved Delivery list entry)", () => {
       expect(outcomeOf(r.effects), u).toBe("guest_admitted");
       expect(r.nextState.activeGuest?.name, u).toBe("Delivery");
       expect(r.reply, u).toMatch(/305/);
+    }
+  });
+
+  it("food mentions in guest-info / for-named turns do not admit Delivery", async () => {
+    const deps = deliveryDeps();
+    const admitted = await step(
+      { phase: "INTENT" },
+      "Jane McDaniel is here to see Scott",
+      deps
+    );
+    for (const u of [
+      "I have food notes for her, can she come up?",
+      "We have food for Jane downstairs",
+    ]) {
+      const r = await step(admitted.nextState, u, deps);
+      expect(outcomeOf(r.effects), u).not.toBe("guest_admitted");
+      expect(r.nextState.activeGuest?.name, u).not.toBe("Delivery");
     }
   });
 

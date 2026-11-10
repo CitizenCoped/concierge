@@ -45,24 +45,26 @@ const DELIVERY_INTRO_RE =
 
 /**
  * Takeout/food/groceries announced at a location without needing the word
- * "delivery" — "Takeout is here", "There's food downstairs".
+ * "delivery" — "Takeout is here", "Takeout's here", "There's food downstairs".
+ * Location must be attached to the food noun (not a distant "can she" elsewhere).
  */
 const FOOD_AT_LOCATION_RE =
-  /\b(?:take[\s-]?out|food|grocer(?:y|ies))\s+(?:is|are|'s)\s+(?:here|downstairs|outside|waiting|arrived|at the door|in the lobby)\b/i;
+  /\b(?:take[\s-]?out|food|grocer(?:y|ies))(?:'s|\s+is|\s+are)\s+(?:here|downstairs|outside|waiting|arrived|at the door|in the lobby)\b/i;
 
-const HAVE_FOOD_INTRO_RE =
-  /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:an?\s+)?(?:take[\s-]?out|food|grocer(?:y|ies))\b/i;
+/** "There's takeout downstairs" / "I have food here" — location near the food. */
+const HAVE_FOOD_ARRIVAL_RE =
+  /\b(?:i have|i'?ve got|we have|there'?s|there is|got)\s+(?:an?\s+)?(?:take[\s-]?out|food|grocer(?:y|ies))\b(?:\s+\w+){0,4}\s+(?:here|downstairs|outside|waiting|arrived|at the door|in the lobby)\b/i;
 
 const ARRIVAL_OR_ACCESS_RE =
   /\b(?:here|downstairs|lobby|outside|waiting|arrived|at the door|at the front desk|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|can they|can he|can she)\b/i;
 
 /**
- * Package/delivery/question addressed to a named person — not the Delivery
- * list entry (existing "delivery for Jane" behavior).
+ * Package/delivery/food/question addressed to a named person — not the
+ * Delivery list entry (existing "delivery for Jane" behavior).
  * Exclude common non-name tails (the unit, you, us, Scott/Monica).
  */
 const PACKAGE_FOR_NAMED_RE =
-  /\b(?:package|parcel|delivery|question)\s+for\s+(?!delivery\b)(?!the\b|a\b|an\b|you\b|us\b|them\b|him\b|her\b|me\b|scott\b|monica\b|unit\b|condo\b)[A-Za-z]/i;
+  /\b(?:package|parcel|delivery|question|food|take[\s-]?out|grocer(?:y|ies))\s+for\s+(?!delivery\b)(?!the\b|a\b|an\b|you\b|us\b|them\b|him\b|her\b|me\b|scott\b|monica\b|unit\b|condo\b)[A-Za-z]/i;
 
 /**
  * Clarify-reply confirmations: whole-turn only — bare "Delivery",
@@ -123,9 +125,8 @@ export function looksLikeDeliveryTypeArrival(utterance: string): boolean {
   if (!hasArrival) return false;
 
   if (FOOD_BRAND_RE.test(u) || FOOD_DELIVERY_PHRASE_RE.test(u)) return true;
-  // "Takeout is here" / "There's food downstairs" — no "deliver*" required.
-  if (FOOD_AT_LOCATION_RE.test(u)) return true;
-  if (HAVE_FOOD_INTRO_RE.test(u)) return true;
+  // "Takeout is/’s here" / "There's food downstairs" — location bound to food.
+  if (FOOD_AT_LOCATION_RE.test(u) || HAVE_FOOD_ARRIVAL_RE.test(u)) return true;
   if (FOOD_OR_GROCERIES_RE.test(u) && /\bdeliver/i.test(u)) return true;
   if (
     FOOD_OR_GROCERIES_RE.test(u) &&
