@@ -210,6 +210,18 @@ describe("classifyDeskSubject", () => {
     ).toBe("same_guest");
   });
 
+  it("clarify: deictic guest + location in access phrase (no clear / no notes)", () => {
+    expect(
+      classifyDeskSubject("Can the guest downstairs come up?", jane).kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("Can our guest here come up?", jane).kind
+    ).toBe("clarify");
+    expect(
+      classifyDeskSubject("Can this guest outside come up?", jane).kind
+    ).toBe("clarify");
+  });
+
   it("visitor parking compound is not a new person", () => {
     expect(
       classifyDeskSubject("Does she have visitor parking available?", jane)

@@ -154,10 +154,14 @@ const COMPANION_OF_RE =
 const ACCESS_NAME_TRAILING_FILLER_RE =
   /^(please|still|just|now|also|again|yet|too|really|already)$/i;
 
+/** Location tails greedily captured in "can the guest downstairs come up?". */
+const ACCESS_NAME_LOCATION_TAIL_RE =
+  /^(downstairs|upstairs|here|there|outside|inside|lobby|waiting|arrived)$/i;
+
 /**
- * Normalize a captured access-name span: strip trailing adverbs/fillers only.
+ * Normalize a captured access-name span: strip trailing fillers/locations.
  * Do NOT strip leading a/an/the/my — those can be real given names (An, My).
- * Reject pronouns and whole deictic guest/visitor phrases.
+ * Reject pronouns and deictic guest/visitor phrases (with or without location).
  */
 function cleanAccessPersonName(
   raw: string,
@@ -169,7 +173,8 @@ function cleanAccessPersonName(
     .filter(Boolean);
   while (
     parts.length &&
-    ACCESS_NAME_TRAILING_FILLER_RE.test(parts[parts.length - 1]!)
+    (ACCESS_NAME_TRAILING_FILLER_RE.test(parts[parts.length - 1]!) ||
+      ACCESS_NAME_LOCATION_TAIL_RE.test(parts[parts.length - 1]!))
   ) {
     parts.pop();
   }
@@ -189,10 +194,15 @@ function cleanAccessPersonName(
     if (guest && namesReferToSameGuest(cleaned, guest.name)) return cleaned;
     return null;
   }
-  // Whole deictic role phrases ("the guest", "our visitor") — not a new name.
+  // Deictic role phrases ("the guest", "our visitor [here]") — not a new name.
+  // After location-tail strip, exact two-word form; also reject if raw was
+  // det+guest+location before strip.
   if (
     /^(?:the|this|that|our|my|your|his|her|their)\s+(?:guest|visitor)$/i.test(
       cleaned
+    ) ||
+    /^(?:the|this|that|our|my|your|his|her|their)\s+(?:guest|visitor)\b/i.test(
+      raw.trim()
     )
   ) {
     return null;

@@ -1709,6 +1709,29 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
     }
   });
 
+  it("deictic guest + location access clarifies without clearing Jane", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "Can the guest downstairs come up?",
+      "Can our guest here come up?",
+      "Can this guest outside come up?",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(r.nextState.phase, u).toBe("CLARIFY_SUBJECT");
+      expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+    }
+  });
+
   it("she/her with a new person intro does not bind to Jane", async () => {
     const { admitted, deps } = await admitJane();
     for (const u of [
