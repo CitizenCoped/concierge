@@ -110,8 +110,10 @@ or delete the file; GitHub Pages settings stay as they are.
   `main`).
 - **Front-desk number:** **+1 858 944-0764** (`AGENTPHONE_NUMBER`).
 - **Agent:** "Angel Concierge", id `cmsk2931p0xlgg25fubvb1cwp`, webhook voice
-  mode, `sttMode: accurate`, `maxSilenceMs: 60000`, agent-level webhook →
-  `<prod>/api/agentphone/webhook` (timeout 60s).
+  mode, `sttMode: accurate`, agent-level webhook →
+  `<prod>/api/agentphone/webhook` (timeout 60s). Provision script sets
+  `maxSilenceMs: 60000`; **live agent value not re-verified in this PR** —
+  do not assume 60s without reading the provider.
 - **Neon:** project `angel-concierge` (`damp-flower-09328590`), same DB for
   dev and prod.
 
@@ -131,9 +133,13 @@ or delete the file; GitHub Pages settings stay as they are.
    admit but never deny — on a miss the AI re-asks for the name explicitly;
    denials only follow an explicitly stated name. Partial/single-token replies
    in ASK_NAME re-ask once for first+last before denying. STT fragments
-   ("I have a ") get up to two clarification re-asks, then fail safe to a
-   transfer. Matching is phonetic+fuzzy (Soundex + Levenshtein) and admits
-   only on exactly one active candidate.
+   ("I have a ") get up to two clarification re-asks, then offer a transfer.
+   Matching is phonetic+fuzzy (Soundex + Levenshtein) and admits only on
+   exactly one active candidate. **Approval and message-taking are not
+   terminal** — no app `hangup` on those paths; `activeGuest` is kept for
+   Guest Info follow-ups (permissions **and** factual/instruction notes).
+   Uncertain notes → offer Scott/Monica (no blind transfer). Negated /
+   non-consent resident mentions do not transfer. Human ends the call.
 5. **Event catalog additions:** `transfer.request` (legacy ack-hold title;
    no longer emitted on the hot path), `guest.info_answered` ("ℹ️ Guest Info
    Answered"), and `system.test` ("🔔 Test Notification"). Original catalog
@@ -163,8 +169,9 @@ SCOTT_PHONE               +16198766618
 MONICA_PHONE              +18589452875
 TZ_HOME                   America/Los_Angeles (optional, default this)
 APP_URL                   prod origin, used for notification deep links
-AI_GATEWAY_API_KEY        Vercel AI Gateway key (optional on Vercel OIDC;
-                          required locally for Guest Info permission Q&A)
+AI_GATEWAY_API_KEY        optional; production Guest Info uses Vercel AI
+                          Gateway OIDC (verified live) — no key required on
+                          Vercel. Useful for local/non-OIDC runs only.
 AI_GATEWAY_MODEL          optional model id (default openai/gpt-4.1-mini)
 ```
 
