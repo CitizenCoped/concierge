@@ -1644,6 +1644,9 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       "Our guest is in the lobby",
       "This guest is waiting outside",
       "The visitor is downstairs asking for access",
+      "The guest is here",
+      "Our guest arrived",
+      "This guest is here",
     ]) {
       let answeredFromNotes = false;
       const guarded = {
@@ -1658,6 +1661,35 @@ describe("desk-subject redesign (clarify / holds / message / unnamed)", () => {
       expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
       expect(r.nextState.phase, u).toBe("CLARIFY_SUBJECT");
       expect(r.nextState.activeGuest?.name, u).toBe("Jane McDaniel");
+    }
+  });
+
+  it("friend-of-Jane / other named access does not reuse Jane notes", async () => {
+    const { admitted, deps } = await admitJane();
+    for (const u of [
+      "A friend of Jane is here, can they come up?",
+      "Jane is here, can Bob come up?",
+      "Can Bob come up?",
+    ]) {
+      let answeredFromNotes = false;
+      const guarded = {
+        ...deps,
+        matchGuest: async () => ({ match: null, candidates: [] }),
+        answerGuestInfo: async () => {
+          answeredFromNotes = true;
+          return { answer: "yes" as const, reply: "should not run" };
+        },
+      };
+      const r = await step(admitted.nextState, u, guarded);
+      expect(answeredFromNotes, u).toBe(false);
+      expect(notifyEvents(r.effects), u).not.toContain("guest.info_answered");
+      expect(
+        ["ASK_NAME", "CLARIFY_SUBJECT"].includes(r.nextState.phase),
+        `${u} → ${r.nextState.phase}`
+      ).toBe(true);
+      if (r.nextState.phase === "ASK_NAME") {
+        expect(r.nextState.activeGuest, u).toBeNull();
+      }
     }
   });
 

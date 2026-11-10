@@ -134,6 +134,37 @@ describe("classifyDeskSubject", () => {
     expect(
       classifyDeskSubject("This guest is waiting outside", jane).kind
     ).toBe("clarify");
+    expect(classifyDeskSubject("The guest is here", jane).kind).toBe(
+      "clarify"
+    );
+    expect(classifyDeskSubject("The guest arrived", jane).kind).toBe(
+      "clarify"
+    );
+    expect(classifyDeskSubject("This guest is here", jane).kind).toBe(
+      "clarify"
+    );
+    expect(classifyDeskSubject("Our guest arrived", jane).kind).toBe(
+      "clarify"
+    );
+    expect(classifyDeskSubject("Our guest is here", jane).kind).toBe(
+      "clarify"
+    );
+  });
+
+  it("new arrival: companion of known guest or different access name", () => {
+    expect(
+      classifyDeskSubject("A friend of Jane is here, can they come up?", jane, {
+        spokenName: "Jane",
+      }).kind
+    ).toBe("new_arrival");
+    expect(
+      classifyDeskSubject("Jane is here, can Bob come up?", jane, {
+        spokenName: "Jane",
+      }).kind
+    ).toBe("new_arrival");
+    expect(
+      classifyDeskSubject("Can Bob come up?", jane).kind
+    ).toBe("new_arrival");
   });
 
   it("visitor parking compound is not a new person", () => {

@@ -87,8 +87,10 @@ const ENTITY_AT_LOCATION_RE = new RegExp(
 
 const INDEFINITE_SOMEONE_RE = /\b(?:someone|somebody)\b/i;
 
+// Keep in sync with LOCATION_RE for here/arrived — otherwise deictic+here
+ // turns skip clarify (not isInfoSeeking) and fall through to unrelated note reuse.
 const ACCESS_OR_INFO_RE =
-  /\?|\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|downstairs|lobby|front desk|door|outside|waiting)\b/i;
+  /\?|\b(?:allowed|permission|permitted|access|park|parking|garage|enter|entry|come up|go up|come in|send (?:him|her|them) up|let (?:him|her|them)|expected|instructions?|delivery|tell (?:her|him|them)|downstairs|lobby|front desk|door|outside|waiting|arrived|here)\b/i;
 
 const SAME_PRONOUN_RE = /\b(?:she|her)\b/i;
 const OTHER_PRONOUN_RE = /\b(?:he|him|they|them)\b/i;
@@ -144,10 +146,49 @@ export function looksLikePersonIntro(utterance: string): boolean {
   );
 }
 
+/** "a friend of Jane" / companion framing — never the known guest alone. */
+const COMPANION_OF_RE =
+  /\b(?:a\s+)?(?:friend|colleague|coworker|guest|visitor|plus\s*one|husband|wife|partner|son|daughter|mother|father|mom|dad|brother|sister|driver|family\s+member)\s+of\b/i;
+
+/**
+ * Access request naming a person ("can Bob come up?", "send Sarah up").
+ */
+function accessPersonName(utterance: string): string | null {
+  const patterns = [
+    /\b(?:can|could|may|should)\s+([A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+(?:come\s+up|go\s+up|come\s+in|enter)\b/i,
+    /\b(?:send|let)\s+([A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2})\s+up\b/i,
+  ];
+  for (const re of patterns) {
+    const m = utterance.match(re);
+    const raw = m?.[1]?.trim();
+    if (!raw) continue;
+    if (
+      /^(she|he|they|her|him|them|someone|somebody|the|a|an|this|that)$/i.test(
+        raw
+      )
+    ) {
+      continue;
+    }
+    return raw;
+  }
+  return null;
+}
+
+/** Access-named person that is NOT the active guest (Bob after Jane). */
+function otherAccessPersonName(
+  utterance: string,
+  guest: DeskGuestRef | null
+): string | null {
+  const raw = accessPersonName(utterance);
+  if (!raw) return null;
+  if (guest && namesReferToSameGuest(raw, guest.name)) return null;
+  return raw;
+}
+
 /**
  * Any cue that the turn may be about a person other than activeGuest.
- * Used to fail-close note reuse — presence of any of these blocks same_guest
- * unless there is an unambiguous name match to the known guest.
+ * Blocks same_guest note reuse (including when the known guest's name is
+ * merely mentioned alongside a different person).
  */
 function hasCompetingPersonSignal(
   utterance: string,
@@ -157,8 +198,10 @@ function hasCompetingPersonSignal(
 ): boolean {
   if (EXPLICIT_OTHER_RE.test(utterance)) return true;
   if (INDEFINITE_SOMEONE_RE.test(utterance)) return true;
+  if (COMPANION_OF_RE.test(utterance)) return true;
   if (personIntro) return true;
   if (OTHER_PRONOUN_RE.test(utterance)) return true;
+  if (otherAccessPersonName(utterance, guest)) return true;
   if (
     named &&
     guest &&
@@ -264,14 +307,40 @@ export function classifyDeskSubject(
     return { kind: "new_arrival", named };
   }
 
+  // Competing other person named for access ("can Bob come up?") while a
+  // prior guest is active — treat as new arrival, never reuse notes.
+  const otherAccess = guest ? otherAccessPersonName(u, guest) : null;
+  if (guest && otherAccess) {
+    return { kind: "new_arrival", named: otherAccess };
+  }
+  if (guest && COMPANION_OF_RE.test(u) && (arrivalContext || isInfoSeeking(u))) {
+    return {
+      kind: "new_arrival",
+      named:
+        named && !namesReferToSameGuest(named, guest.name) ? named : null,
+    };
+  }
+
   // --- High-confidence SAME GUEST (fail-closed note reuse) ---
-  // Unambiguous name match → same guest. she/her continuity, or bare
-  // the/this/our guest deixis WITHOUT a location (location + deictic alone
-  // is ambiguous after a prior admit — "The guest in the lobby…" → clarify).
-  // Both require no competing new-person / new-arrival signal.
+  // Unambiguous name match only when there is NO competing person signal
+  // (blocks "friend of Jane" / "Jane is here, can Bob…" note reuse).
+  // she/her continuity, or bare the-guest deixis WITHOUT a location.
   // "I have the guest here, can she come up?" keeps notes via she/her.
   if (guest) {
-    if (named && namesReferToSameGuest(named, guest.name)) {
+    if (
+      named &&
+      namesReferToSameGuest(named, guest.name) &&
+      !competing
+    ) {
+      return { kind: "same_guest" };
+    }
+    // "Can Jane come up?" — access name matches active guest, no competitor.
+    const accessName = accessPersonName(u);
+    if (
+      accessName &&
+      namesReferToSameGuest(accessName, guest.name) &&
+      !competing
+    ) {
       return { kind: "same_guest" };
     }
     if (
@@ -287,9 +356,10 @@ export function classifyDeskSubject(
   if (guest && isInfoSeeking(u)) {
     if (
       competing ||
+      otherAccess ||
       SAME_PRONOUN_RE.test(u) ||
       DEICTIC_GUEST_RE.test(u) ||
-      /\b(?:visitor|guest|downstairs|lobby|door|outside|here)\b/i.test(u)
+      /\b(?:visitor|guest|downstairs|lobby|door|outside|here|arrived)\b/i.test(u)
     ) {
       return { kind: "clarify" };
     }

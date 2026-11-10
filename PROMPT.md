@@ -249,11 +249,12 @@ States & behavior:
      is set — never silently remap Monica → Scott.
    - **Desk subject** (conservative, deterministic — prefer ask over guess):
      - high-confidence **same guest** — note reuse is **fail-closed**:
-       unambiguous name match to `activeGuest`, OR she/her continuity, OR
-       bare the-guest deixis **without** a location — and with **no**
-       competing new-person / new-arrival signal. Deictic + location alone
-       (no she/her) clarifies; “I have the guest here, can she come up?”
-       still uses notes via she/her.
+       unambiguous name match to `activeGuest` with **no** competing
+       person signal, OR she/her continuity, OR bare the-guest deixis
+       **without** a location. Deictic + location alone (incl. here/
+       arrived, no she/her) clarifies; “I have the guest here, can she
+       come up?” still uses notes via she/her. Companion-of / different
+       access name (“friend of Jane”, “can Bob come up?”) → new arrival.
      - high-confidence **new arrival** (someone/somebody + arrival/access
        e.g. parking/here, person nouns like man/woman/delivery
        person/housekeeper/visitor except "visitor parking", named
